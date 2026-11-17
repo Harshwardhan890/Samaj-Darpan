@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: samaj-darpan
+    runtime: node
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: samaj-darpan-data
+      mountPath: /var/data/samaj-darpan
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 8787
+      - key: DATA_DIR
+        value: /var/data/samaj-darpan
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: DEMO_MODE
+        value: "true"
+      - key: ENABLE_AUTO_REFRESH
+        value: "false"
