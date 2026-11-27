@@ -26,6 +26,7 @@ import AdminSourcesPage from "@/pages/admin/AdminSources";
 import AdminUsersPage from "@/pages/admin/AdminUsers";
 import AdminAuditPage from "@/pages/admin/AdminAudit";
 import AdminGeoPage from "@/pages/admin/AdminGeo";
+import AdminRepresentativesPage from "@/pages/admin/AdminRepresentatives";
 
 export default function App() {
   return (
@@ -68,6 +69,7 @@ export default function App() {
           <Route path="projects" element={<AdminProjectsPage />} />
           <Route path="import" element={<AdminImportPage />} />
           <Route path="sources" element={<AdminSourcesPage />} />
+          <Route path="representatives" element={<AdminRepresentativesPage />} />
           <Route path="users" element={<AdminUsersPage />} />
           <Route path="audit" element={<AdminAuditPage />} />
           <Route path="geo" element={<AdminGeoPage />} />

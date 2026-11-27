@@ -1,5 +1,6 @@
+import { useEffect } from "react";
 import L from "leaflet";
-import { MapContainer, Marker, Popup, TileLayer, Circle } from "react-leaflet";
+import { MapContainer, Marker, Popup, TileLayer, Circle, GeoJSON, useMap } from "react-leaflet";
 import { Link } from "react-router-dom";
 import type { Project, ProjectStatus } from "@shared/types";
 import { STATUS_LABELS } from "@shared/format";
@@ -25,14 +26,50 @@ export function projectMarkerIcon(project: Project): L.DivIcon {
   });
 }
 
+export function MapViewportController({
+  center,
+  zoom,
+  selectedProject,
+}: {
+  center: [number, number];
+  zoom: number;
+  selectedProject?: Project | null;
+}) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (
+      selectedProject &&
+      selectedProject.lat !== null &&
+      selectedProject.lng !== null &&
+      (selectedProject.coordinatesVerified || selectedProject.dataClass === "demonstration")
+    ) {
+      map.flyTo([selectedProject.lat, selectedProject.lng], Math.max(map.getZoom(), 13), {
+        duration: 0.6,
+      });
+    }
+  }, [map, selectedProject]);
+
+  useEffect(() => {
+    if (!selectedProject) {
+      map.setView(center, zoom);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [center[0], center[1], zoom]);
+
+  return null;
+}
+
 export function ProjectMap({
   project,
   height = 380,
   interactive = true,
+  constituenciesGeoJson,
 }: {
   project: Project;
   height?: number;
   interactive?: boolean;
+  constituenciesGeoJson?: GeoJSON.GeoJsonObject | null;
 }) {
   if (project.lat === null || project.lng === null) return null;
   return (
@@ -48,6 +85,19 @@ export function ProjectMap({
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
+        {constituenciesGeoJson ? (
+          <GeoJSON
+            key={JSON.stringify(constituenciesGeoJson).length}
+            data={constituenciesGeoJson}
+            style={{
+              color: "#0e7c7b",
+              weight: 1.5,
+              dashArray: "4 4",
+              fillColor: "#149a97",
+              fillOpacity: 0.04,
+            }}
+          />
+        ) : null}
         <Circle
           center={[project.lat, project.lng]}
           radius={350}

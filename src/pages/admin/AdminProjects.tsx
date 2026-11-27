@@ -8,9 +8,13 @@ import {
   Copy,
   Download,
   ExternalLink,
+  FileText,
   Pencil,
+  PlusCircle,
   Search,
   ShieldCheck,
+  Trash2,
+  Unlink,
   Users,
   X,
 } from "lucide-react";
@@ -20,6 +24,7 @@ import type {
   Paginated,
   Project,
   ProjectCategory,
+  ProjectDocument,
   ProjectStatus,
   Representative,
   VerificationStatus,
@@ -31,6 +36,7 @@ import {
   STATUS_LABELS,
   VERIFICATION_LABELS,
   formatDate,
+  formatINRCompact,
   relativeDate,
 } from "@shared/format";
 import {
@@ -41,6 +47,7 @@ import {
   ErrorState,
   LoadingBlock,
   Modal,
+  Tabs,
   VerificationBadge,
 } from "@/components/ui";
 import { useApiData } from "@/hooks/useApiData";
@@ -68,6 +75,7 @@ export default function AdminProjectsPage() {
   const [verification, setVerification] = useState(searchParams.get("verification") ?? "all");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Project | null>(null);
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     const urlQ = searchParams.get("q") ?? "";
@@ -117,6 +125,7 @@ export default function AdminProjectsPage() {
 
   const saved = (project: Project) => {
     setSelected(null);
+    setCreating(false);
     refresh();
     overview.refresh();
     void project;
@@ -134,6 +143,14 @@ export default function AdminProjectsPage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="teal"
+              size="sm"
+              onClick={() => setCreating(true)}
+              icon={<PlusCircle size={13} />}
+            >
+              New project
+            </Button>
             <a
               href="/api/admin/export?format=csv"
               download="samaj-darpan-projects.csv"
@@ -299,11 +316,18 @@ export default function AdminProjectsPage() {
         ) : null}
       </section>
 
-      {selected ? (
+      {selected || creating ? (
         <EditProjectModal
           project={selected}
-          onClose={() => setSelected(null)}
+          onClose={() => {
+            setSelected(null);
+            setCreating(false);
+          }}
           onSaved={saved}
+          onUpdated={() => {
+            refresh();
+            overview.refresh();
+          }}
         />
       ) : null}
     </div>
@@ -426,40 +450,56 @@ function EditProjectModal({
   project,
   onClose,
   onSaved,
+  onUpdated,
 }: {
-  project: Project;
+  project: Project | null;
   onClose: () => void;
   onSaved: (project: Project) => void;
+  onUpdated?: () => void;
 }) {
   const toast = useToast();
+  const [activeProject, setActiveProject] = useState<Project | null>(project);
+  const isCreate = activeProject === null;
+  const [modalTab, setModalTab] = useState<"details" | "funding" | "documents" | "representatives">("details");
+
   const [form, setForm] = useState({
-    name: project.name,
-    description: project.description ?? "",
-    city: project.city ?? "",
-    state: project.state ?? "",
-    district: project.district ?? "",
-    category: project.category,
-    status: project.status,
-    executingDepartment: project.executingDepartment ?? "",
-    fundingAuthority: project.fundingAuthority ?? "",
-    implementingAgency: project.implementingAgency ?? "",
-    contractor: project.contractor ?? "",
-    approvedBudget: project.approvedBudget?.toString() ?? "",
-    revisedBudget: project.revisedBudget?.toString() ?? "",
-    expenditure: project.expenditure?.toString() ?? "",
-    startDate: toDateInput(project.startDate),
-    expectedCompletion: toDateInput(project.expectedCompletion),
-    actualCompletion: toDateInput(project.actualCompletion),
-    physicalProgress: project.physicalProgress?.toString() ?? "",
-    financialProgress: project.financialProgress?.toString() ?? "",
-    lat: project.lat?.toString() ?? "",
-    lng: project.lng?.toString() ?? "",
-    coordinatesVerified: project.coordinatesVerified,
-    sourceOrganisation: project.sourceOrganisation,
-    sourceUrl: project.sourceUrl ?? "",
-    dataClass: project.dataClass,
-    verificationStatus: project.verificationStatus,
-    caveats: project.caveats.join("\n"),
+    name: project?.name ?? "",
+    description: project?.description ?? "",
+    city: project?.city ?? "",
+    state: project?.state ?? "",
+    district: project?.district ?? "",
+    category: project?.category ?? ("roads" as ProjectCategory),
+    status: project?.status ?? ("ongoing" as ProjectStatus),
+    executingDepartment: project?.executingDepartment ?? "",
+    fundingAuthority: project?.fundingAuthority ?? "",
+    implementingAgency: project?.implementingAgency ?? "",
+    contractor: project?.contractor ?? "",
+    approvedBudget: project?.approvedBudget?.toString() ?? "",
+    revisedBudget: project?.revisedBudget?.toString() ?? "",
+    expenditure: project?.expenditure?.toString() ?? "",
+    fundingCentral: project?.funding.central?.toString() ?? "",
+    fundingState: project?.funding.state?.toString() ?? "",
+    fundingMunicipal: project?.funding.municipal?.toString() ?? "",
+    fundingOther: project?.funding.other?.toString() ?? "",
+    fundingOtherSourceLabel: project?.funding.otherSourceLabel ?? "",
+    fundingNotes: project?.funding.notes ?? "",
+    sanctioningAuthority: project?.responsibility.sanctioningAuthority ?? "",
+    executingAgencyResp: project?.responsibility.executingAgency ?? "",
+    tenderingAuthority: project?.responsibility.tenderingAuthority ?? "",
+    supervisingDepartment: project?.responsibility.supervisingDepartment ?? "",
+    startDate: toDateInput(project?.startDate ?? null),
+    expectedCompletion: toDateInput(project?.expectedCompletion ?? null),
+    actualCompletion: toDateInput(project?.actualCompletion ?? null),
+    physicalProgress: project?.physicalProgress?.toString() ?? "",
+    financialProgress: project?.financialProgress?.toString() ?? "",
+    lat: project?.lat?.toString() ?? "",
+    lng: project?.lng?.toString() ?? "",
+    coordinatesVerified: project?.coordinatesVerified ?? false,
+    sourceOrganisation: project?.sourceOrganisation ?? "",
+    sourceUrl: project?.sourceUrl ?? "",
+    dataClass: project?.dataClass ?? ("admin-verified" as DataClass),
+    verificationStatus: project?.verificationStatus ?? ("under-review" as VerificationStatus),
+    caveats: project?.caveats.join("\n") ?? "",
     note: "",
   });
   const [saving, setSaving] = useState(false);
@@ -467,14 +507,25 @@ function EditProjectModal({
   const [error, setError] = useState<string | null>(null);
 
   const repsData = useApiData<{ representatives: Representative[]; total: number }>(
-    `/representatives${qs({ state: project.stateSlug, city: project.citySlug ?? undefined })}`,
-    [project.stateSlug, project.citySlug],
+    activeProject
+      ? `/representatives${qs({
+          state: activeProject.stateSlug,
+          city: activeProject.citySlug ?? undefined,
+        })}`
+      : "/representatives",
+    [activeProject?.stateSlug, activeProject?.citySlug],
   );
   const [repId, setRepId] = useState("");
   const [repBasis, setRepBasis] = useState<ConstituencyVerification>("admin-verified");
   const [repNote, setRepNote] = useState("");
   const [repSourceUrl, setRepSourceUrl] = useState("");
   const [linkingRep, setLinkingRep] = useState(false);
+
+  const [docTitle, setDocTitle] = useState("");
+  const [docKind, setDocKind] = useState<ProjectDocument["kind"]>("report");
+  const [docUrl, setDocUrl] = useState("");
+  const [docPublishedAt, setDocPublishedAt] = useState("");
+  const [addingDoc, setAddingDoc] = useState(false);
 
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -486,6 +537,7 @@ function EditProjectModal({
   );
 
   const linkRepresentative = async () => {
+    if (!activeProject) return;
     setError(null);
     if (!repId) {
       setError("Select a representative to link.");
@@ -498,7 +550,7 @@ function EditProjectModal({
     setLinkingRep(true);
     try {
       const response = await apiFetch<{ project: Project }>(
-        `/admin/projects/${project.id}/representatives`,
+        `/admin/projects/${activeProject.id}/representatives`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -509,11 +561,15 @@ function EditProjectModal({
           }),
         },
       );
+      setActiveProject(response.project);
+      setRepId("");
+      setRepNote("");
+      setRepSourceUrl("");
+      onUpdated?.();
       toast.push("Representative attribution linked", {
         description: "Link recorded in the audit log.",
         tone: "success",
       });
-      onSaved(response.project);
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : "Could not link representative.",
@@ -523,11 +579,91 @@ function EditProjectModal({
     }
   };
 
+  const unlinkRepresentative = async (representativeId: string) => {
+    if (!activeProject) return;
+    setError(null);
+    try {
+      const response = await apiFetch<{ project: Project }>(
+        `/admin/projects/${activeProject.id}/representatives/${representativeId}`,
+        { method: "DELETE" },
+      );
+      setActiveProject(response.project);
+      onUpdated?.();
+      toast.push("Representative link removed", { tone: "info" });
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Could not unlink representative.",
+      );
+    }
+  };
+
+  const addDocument = async () => {
+    if (!activeProject) return;
+    setError(null);
+    if (docTitle.trim().length < 2) {
+      setError("Enter a document title.");
+      return;
+    }
+    if (!/^https?:\/\//i.test(docUrl.trim())) {
+      setError("Document URL must start with http:// or https://.");
+      return;
+    }
+    setAddingDoc(true);
+    try {
+      const response = await apiFetch<{ project: Project }>(
+        `/admin/projects/${activeProject.id}/documents`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            title: docTitle.trim(),
+            kind: docKind,
+            url: docUrl.trim(),
+            publishedAt: docPublishedAt || null,
+          }),
+        },
+      );
+      setActiveProject(response.project);
+      setDocTitle("");
+      setDocUrl("");
+      setDocPublishedAt("");
+      onUpdated?.();
+      toast.push("Document attached", { tone: "success" });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not attach document.");
+    } finally {
+      setAddingDoc(false);
+    }
+  };
+
+  const removeDocument = async (docId: string) => {
+    if (!activeProject) return;
+    setError(null);
+    try {
+      const response = await apiFetch<{ project: Project }>(
+        `/admin/projects/${activeProject.id}/documents/${docId}`,
+        { method: "DELETE" },
+      );
+      setActiveProject(response.project);
+      onUpdated?.();
+      toast.push("Document removed", { tone: "info" });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not remove document.");
+    }
+  };
+
   const save = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
     if (form.name.trim().length < 2) {
       setError("Enter a record name.");
+      return;
+    }
+    if (isCreate && !cityMatch && form.state.trim().length < 2) {
+      setError("Enter a state or supported city.");
+      return;
+    }
+    if (isCreate && form.sourceOrganisation.trim().length < 2) {
+      setError("Enter a source organisation.");
       return;
     }
     if (form.sourceUrl && !/^https?:\/\//i.test(form.sourceUrl)) {
@@ -558,7 +694,7 @@ function EditProjectModal({
       setError("Financial progress must be between 0 and 100.");
       return;
     }
-    const patch: Record<string, unknown> = {
+    const payload: Record<string, unknown> = {
       name: form.name.trim(),
       description: form.description.trim() || null,
       city: form.city.trim() || null,
@@ -581,24 +717,49 @@ function EditProjectModal({
       lat: latNum,
       lng: lngNum,
       coordinatesVerified: form.coordinatesVerified,
-      sourceOrganisation: form.sourceOrganisation.trim() || project.sourceOrganisation,
+      sourceOrganisation: form.sourceOrganisation.trim() || activeProject?.sourceOrganisation || "",
       sourceUrl: form.sourceUrl.trim() || null,
       verificationStatus: form.verificationStatus,
       caveats: form.caveats
         .split("\n")
         .map((line) => line.trim())
         .filter(Boolean),
+      funding: {
+        central: numOrNull(form.fundingCentral),
+        state: numOrNull(form.fundingState),
+        municipal: numOrNull(form.fundingMunicipal),
+        other: numOrNull(form.fundingOther),
+        otherSourceLabel: form.fundingOtherSourceLabel.trim() || null,
+        notes: form.fundingNotes.trim() || null,
+      },
+      responsibility: {
+        sanctioningAuthority: form.sanctioningAuthority.trim() || null,
+        executingAgency: form.executingAgencyResp.trim() || null,
+        tenderingAuthority: form.tenderingAuthority.trim() || null,
+        supervisingDepartment: form.supervisingDepartment.trim() || null,
+        contractor: form.contractor.trim() || null,
+      },
     };
-    if (!cityMatch && form.state.trim().length >= 2) patch.state = form.state.trim();
-    if (project.dataClass !== "demonstration") patch.dataClass = form.dataClass;
+    if (isCreate) {
+      payload.state = cityMatch?.state ?? form.state.trim();
+      payload.dataClass = form.dataClass === "demonstration" ? "admin-verified" : form.dataClass;
+    } else {
+      if (!cityMatch && form.state.trim().length >= 2) payload.state = form.state.trim();
+      if (activeProject.dataClass !== "demonstration") payload.dataClass = form.dataClass;
+    }
 
     setSaving(true);
     try {
-      const response = await apiFetch<{ project: Project }>(
-        `/admin/projects/${project.id}`,
-        { method: "PATCH", body: JSON.stringify(patch) },
-      );
-      toast.push("Record saved", {
+      const response = isCreate
+        ? await apiFetch<{ project: Project }>("/admin/projects", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          })
+        : await apiFetch<{ project: Project }>(`/admin/projects/${activeProject.id}`, {
+            method: "PATCH",
+            body: JSON.stringify(payload),
+          });
+      toast.push(isCreate ? "Project record created" : "Record saved", {
         description: "Changes were written to the audit log.",
         tone: "success",
       });
@@ -615,11 +776,12 @@ function EditProjectModal({
   };
 
   const verify = async (status: VerificationStatus) => {
+    if (!activeProject) return;
     setError(null);
     setVerifyPending(status);
     try {
       const response = await apiFetch<{ project: Project }>(
-        `/admin/projects/${project.id}/verify`,
+        `/admin/projects/${activeProject.id}/verify`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -643,18 +805,29 @@ function EditProjectModal({
     key: keyof typeof form,
     label: string,
     suffix?: string,
-  ) => (
-    <div>
-      <label className="field-label" htmlFor={`field-${String(key)}`}>{label}{suffix ? ` (${suffix})` : ""}</label>
-      <input
-        id={`field-${String(key)}`}
-        className="input !py-1.5 !text-[12px]"
-        value={String(form[key])}
-        onChange={(event) => set(key, event.target.value as never)}
-        inputMode="decimal"
-      />
-    </div>
-  );
+    showInrPreview = false,
+  ) => {
+    const val = numOrNull(String(form[key]));
+    const inrPreview = showInrPreview && val !== null ? formatINRCompact(val) : null;
+    return (
+      <div>
+        <label className="field-label" htmlFor={`field-${String(key)}`}>
+          {label}
+          {suffix ? ` (${suffix})` : ""}
+        </label>
+        <input
+          id={`field-${String(key)}`}
+          className="input !py-1.5 !text-[12px]"
+          value={String(form[key])}
+          onChange={(event) => set(key, event.target.value as never)}
+          inputMode="decimal"
+        />
+        {inrPreview ? (
+          <p className="mt-0.5 text-[10px] font-semibold text-teal-700">{inrPreview}</p>
+        ) : null}
+      </div>
+    );
+  };
 
   const text = (key: keyof typeof form, label: string) => (
     <div>
@@ -672,14 +845,18 @@ function EditProjectModal({
     <Modal
       open
       onClose={onClose}
-      title="Edit record"
-      description={`${project.id} · ${project.sourceOrganisation}`}
+      title={isCreate ? "Create new project record" : "Edit record"}
+      description={
+        isCreate
+          ? "Add a sourced public infrastructure record directly to the registry."
+          : `${activeProject.id} · ${activeProject.sourceOrganisation}`
+      }
       width="xl"
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button onClick={save} loading={saving} icon={<CheckCircle2 size={14} />}>
-            Save changes
+            {isCreate ? "Create record" : "Save changes"}
           </Button>
         </>
       }
@@ -691,245 +868,423 @@ function EditProjectModal({
           </p>
         ) : null}
 
-        <div className="rounded-lg border border-navy-900/10 bg-cream-50 p-3">
-          <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-ink-400">
-            Verification workflow
-          </p>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {(["under-review", "verified", "published", "outdated", "rejected"] as VerificationStatus[]).map(
-              (status) => (
-                <Button
-                  key={status}
-                  type="button"
-                  size="sm"
-                  variant={status === "published" ? "teal" : "outline"}
-                  loading={verifyPending === status}
-                  onClick={() => verify(status)}
-                  icon={<ShieldCheck size={12} />}
+        <Tabs
+          value={modalTab}
+          onChange={(next) => setModalTab(next as typeof modalTab)}
+          tabs={[
+            { id: "details", label: "Details & Financials" },
+            { id: "funding", label: "Funding & Chain" },
+            ...(!isCreate
+              ? [
+                  {
+                    id: "documents",
+                    label: "Documents",
+                    count: activeProject.documents.length,
+                  },
+                  {
+                    id: "representatives",
+                    label: "Representatives",
+                    count: activeProject.representatives.length,
+                  },
+                ]
+              : []),
+          ]}
+        />
+
+        {modalTab === "details" ? (
+          <>
+            {!isCreate ? (
+              <div className="rounded-lg border border-navy-900/10 bg-cream-50 p-3">
+                <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-ink-400">
+                  Verification workflow
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {(["under-review", "verified", "published", "outdated", "rejected"] as VerificationStatus[]).map(
+                    (status) => (
+                      <Button
+                        key={status}
+                        type="button"
+                        size="sm"
+                        variant={status === "published" ? "teal" : "outline"}
+                        loading={verifyPending === status}
+                        onClick={() => verify(status)}
+                        icon={<ShieldCheck size={12} />}
+                      >
+                        {VERIFICATION_LABELS[status]}
+                      </Button>
+                    ),
+                  )}
+                </div>
+                <input
+                  value={form.note}
+                  onChange={(event) => set("note", event.target.value)}
+                  placeholder="Optional note appended to the record caveats when you change status"
+                  className="input mt-2 !py-1.5 !text-[11px]"
+                />
+                <p className="mt-1 text-[9px] text-ink-400">
+                  Publishing requires a source URL. Current state:{" "}
+                  {VERIFICATION_LABELS[activeProject.verificationStatus]}.
+                </p>
+              </div>
+            ) : null}
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <label className="field-label" htmlFor="record-name">Record name *</label>
+                <input
+                  id="record-name"
+                  className="input !py-1.5 !text-[12px]"
+                  value={form.name}
+                  onChange={(event) => set("name", event.target.value)}
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="field-label" htmlFor="record-description">Description</label>
+                <textarea
+                  id="record-description"
+                  className="input min-h-[70px] !py-1.5 !text-[12px]"
+                  value={form.description}
+                  onChange={(event) => set("description", event.target.value)}
+                />
+              </div>
+              {text("city", "City (must match a supported city)")}
+              {text("state", "State (required if city unsupported)")}
+              {text("district", "District")}
+              <div>
+                <label className="field-label" htmlFor="record-category">Category</label>
+                <select
+                  id="record-category"
+                  className="input !py-1.5 !text-[12px]"
+                  value={form.category}
+                  onChange={(event) => set("category", event.target.value as ProjectCategory)}
                 >
-                  {VERIFICATION_LABELS[status]}
-                </Button>
-              ),
+                  {Object.entries(CATEGORY_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="field-label" htmlFor="record-status">Project status</label>
+                <select
+                  id="record-status"
+                  className="input !py-1.5 !text-[12px]"
+                  value={form.status}
+                  onChange={(event) => set("status", event.target.value as ProjectStatus)}
+                >
+                  {Object.entries(STATUS_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
+              {text("executingDepartment", "Executing department")}
+              {text("fundingAuthority", "Funding authority")}
+              {text("implementingAgency", "Implementing agency")}
+              {text("contractor", "Contractor")}
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              {numeric("approvedBudget", "Approved cost", "INR", true)}
+              {numeric("revisedBudget", "Revised cost", "INR", true)}
+              {numeric("expenditure", "Expenditure", "INR", true)}
+              {numeric("physicalProgress", "Physical progress", "%")}
+              {numeric("financialProgress", "Financial progress", "%")}
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label className="field-label" htmlFor="record-start">Start date</label>
+                <input id="record-start" type="date" className="input !py-1.5 !text-[12px]" value={form.startDate} onChange={(event) => set("startDate", event.target.value)} />
+              </div>
+              <div>
+                <label className="field-label" htmlFor="record-expected">Expected completion</label>
+                <input id="record-expected" type="date" className="input !py-1.5 !text-[12px]" value={form.expectedCompletion} onChange={(event) => set("expectedCompletion", event.target.value)} />
+              </div>
+              <div>
+                <label className="field-label" htmlFor="record-actual">Actual completion</label>
+                <input id="record-actual" type="date" className="input !py-1.5 !text-[12px]" value={form.actualCompletion} onChange={(event) => set("actualCompletion", event.target.value)} />
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              {numeric("lat", "Latitude", "6–38")}
+              {numeric("lng", "Longitude", "68–98")}
+              <label className="flex items-end gap-2 pb-1 text-[11px] font-semibold text-ink-600">
+                <input
+                  type="checkbox"
+                  checked={form.coordinatesVerified}
+                  onChange={(event) => set("coordinatesVerified", event.target.checked)}
+                  className="h-3.5 w-3.5 accent-teal-600"
+                />
+                Coordinate verified against source
+              </label>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              {text("sourceOrganisation", "Source organisation *")}
+              {text("sourceUrl", "Source URL")}
+              {isCreate || activeProject?.dataClass !== "demonstration" ? (
+                <div>
+                  <label className="field-label" htmlFor="record-class">Data classification</label>
+                  <select
+                    id="record-class"
+                    className="input !py-1.5 !text-[12px]"
+                    value={form.dataClass}
+                    onChange={(event) => set("dataClass", event.target.value as DataClass)}
+                  >
+                    {(["official", "imported", "admin-verified", "user-submitted"] as DataClass[]).map(
+                      (value) => (
+                        <option key={value} value={value}>{DATA_CLASS_LABELS[value]}</option>
+                      ),
+                    )}
+                  </select>
+                </div>
+              ) : null}
+              <div>
+                <label className="field-label" htmlFor="record-verification">Verification state</label>
+                <select
+                  id="record-verification"
+                  className="input !py-1.5 !text-[12px]"
+                  value={form.verificationStatus}
+                  onChange={(event) =>
+                    set("verificationStatus", event.target.value as VerificationStatus)
+                  }
+                >
+                  {Object.entries(VERIFICATION_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="field-label" htmlFor="record-caveats">Caveats (one per line)</label>
+              <textarea
+                id="record-caveats"
+                className="input min-h-[70px] !py-1.5 !text-[12px]"
+                value={form.caveats}
+                onChange={(event) => set("caveats", event.target.value)}
+              />
+            </div>
+          </>
+        ) : modalTab === "funding" ? (
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              {numeric("fundingCentral", "Central government funding", "INR", true)}
+              {numeric("fundingState", "State government funding", "INR", true)}
+              {numeric("fundingMunicipal", "Municipal contribution", "INR", true)}
+              {numeric("fundingOther", "Other documented funding", "INR", true)}
+              {text("fundingOtherSourceLabel", "Other funding label (e.g. JICA / PPP)")}
+            </div>
+            <div>
+              <label className="field-label" htmlFor="funding-notes">Funding notes</label>
+              <textarea
+                id="funding-notes"
+                className="input min-h-[70px] !py-1.5 !text-[12px]"
+                value={form.fundingNotes}
+                onChange={(e) => set("fundingNotes", e.target.value)}
+              />
+            </div>
+            <div className="border-t hairline pt-3">
+              <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.12em] text-ink-400">
+                Responsibility chain
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {text("sanctioningAuthority", "Sanctioning authority")}
+                {text("tenderingAuthority", "Tendering authority")}
+                {text("supervisingDepartment", "Supervising department")}
+                {text("executingAgencyResp", "Executing agency")}
+              </div>
+            </div>
+          </div>
+        ) : modalTab === "documents" && activeProject ? (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-navy-900/10 bg-cream-50 p-3">
+              <p className="text-[9.5px] font-bold uppercase tracking-[0.12em] text-ink-400">
+                Attach document or source link
+              </p>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <input
+                  value={docTitle}
+                  onChange={(e) => setDocTitle(e.target.value)}
+                  placeholder="Document title *"
+                  className="input !py-1.5 !text-[11.5px]"
+                />
+                <select
+                  value={docKind}
+                  onChange={(e) => setDocKind(e.target.value as ProjectDocument["kind"])}
+                  className="input !py-1.5 !text-[11.5px]"
+                  aria-label="Document type"
+                >
+                  <option value="report">Public report</option>
+                  <option value="tender">Tender record</option>
+                  <option value="dpr">Detailed project report (DPR)</option>
+                  <option value="notification">Government notification</option>
+                  <option value="photograph">Source photograph</option>
+                  <option value="other">Other document</option>
+                </select>
+                <input
+                  value={docUrl}
+                  onChange={(e) => setDocUrl(e.target.value)}
+                  placeholder="https://… *"
+                  className="input !py-1.5 !text-[11.5px]"
+                />
+                <div className="flex gap-2">
+                  <input
+                    type="date"
+                    value={docPublishedAt}
+                    onChange={(e) => setDocPublishedAt(e.target.value)}
+                    className="input !py-1.5 !text-[11.5px]"
+                    aria-label="Published date"
+                  />
+                  <Button type="button" size="sm" loading={addingDoc} onClick={addDocument}>
+                    Attach
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {activeProject.documents.length === 0 ? (
+              <p className="py-4 text-center text-xs text-ink-400">
+                No documents attached to this record yet.
+              </p>
+            ) : (
+              <ul className="divide-y divide-navy-900/8 rounded-lg border border-navy-900/10 bg-white">
+                {activeProject.documents.map((doc) => (
+                  <li key={doc.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <FileText size={14} className="shrink-0 text-teal-600" />
+                      <div className="min-w-0">
+                        <p className="truncate text-[11.5px] font-bold text-navy-900">{doc.title}</p>
+                        <p className="truncate text-[9.5px] text-ink-400">
+                          {doc.kind} · {doc.url}
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => removeDocument(doc.id)}
+                      aria-label={`Remove ${doc.title}`}
+                      icon={<Trash2 size={12} />}
+                    >
+                      Remove
+                    </Button>
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
-          <input
-            value={form.note}
-            onChange={(event) => set("note", event.target.value)}
-            placeholder="Optional note appended to the record caveats when you change status"
-            className="input mt-2 !py-1.5 !text-[11px]"
-          />
-          <p className="mt-1 text-[9px] text-ink-400">
-            Publishing requires a source URL. Current state: {VERIFICATION_LABELS[project.verificationStatus]}.
-          </p>
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="sm:col-span-2">
-            <label className="field-label" htmlFor="record-name">Record name</label>
-            <input
-              id="record-name"
-              className="input !py-1.5 !text-[12px]"
-              value={form.name}
-              onChange={(event) => set("name", event.target.value)}
-            />
-          </div>
-          <div className="sm:col-span-2">
-            <label className="field-label" htmlFor="record-description">Description</label>
-            <textarea
-              id="record-description"
-              className="input min-h-[70px] !py-1.5 !text-[12px]"
-              value={form.description}
-              onChange={(event) => set("description", event.target.value)}
-            />
-          </div>
-          {text("city", "City (must match a supported city)")}
-          {text("state", "State (only used for unsupported cities)")}
-          {text("district", "District")}
-          <div>
-            <label className="field-label" htmlFor="record-category">Category</label>
-            <select
-              id="record-category"
-              className="input !py-1.5 !text-[12px]"
-              value={form.category}
-              onChange={(event) => set("category", event.target.value as ProjectCategory)}
-            >
-              {Object.entries(CATEGORY_LABELS).map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="field-label" htmlFor="record-status">Project status</label>
-            <select
-              id="record-status"
-              className="input !py-1.5 !text-[12px]"
-              value={form.status}
-              onChange={(event) => set("status", event.target.value as ProjectStatus)}
-            >
-              {Object.entries(STATUS_LABELS).map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
-          </div>
-          {text("executingDepartment", "Executing department")}
-          {text("fundingAuthority", "Funding authority")}
-          {text("implementingAgency", "Implementing agency")}
-          {text("contractor", "Contractor")}
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-3">
-          {numeric("approvedBudget", "Approved cost", "INR")}
-          {numeric("revisedBudget", "Revised cost", "INR")}
-          {numeric("expenditure", "Expenditure", "INR")}
-          {numeric("physicalProgress", "Physical progress", "%")}
-          {numeric("financialProgress", "Financial progress", "%")}
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-3">
-          <div>
-            <label className="field-label" htmlFor="record-start">Start date</label>
-            <input id="record-start" type="date" className="input !py-1.5 !text-[12px]" value={form.startDate} onChange={(event) => set("startDate", event.target.value)} />
-          </div>
-          <div>
-            <label className="field-label" htmlFor="record-expected">Expected completion</label>
-            <input id="record-expected" type="date" className="input !py-1.5 !text-[12px]" value={form.expectedCompletion} onChange={(event) => set("expectedCompletion", event.target.value)} />
-          </div>
-          <div>
-            <label className="field-label" htmlFor="record-actual">Actual completion</label>
-            <input id="record-actual" type="date" className="input !py-1.5 !text-[12px]" value={form.actualCompletion} onChange={(event) => set("actualCompletion", event.target.value)} />
-          </div>
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-3">
-          {numeric("lat", "Latitude", "6–38")}
-          {numeric("lng", "Longitude", "68–98")}
-          <label className="flex items-end gap-2 pb-1 text-[11px] font-semibold text-ink-600">
-            <input
-              type="checkbox"
-              checked={form.coordinatesVerified}
-              onChange={(event) => set("coordinatesVerified", event.target.checked)}
-              className="h-3.5 w-3.5 accent-teal-600"
-            />
-            Coordinate verified against source
-          </label>
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          {text("sourceOrganisation", "Source organisation")}
-          {text("sourceUrl", "Source URL")}
-          {project.dataClass !== "demonstration" ? (
-            <div>
-              <label className="field-label" htmlFor="record-class">Data classification</label>
-              <select
-                id="record-class"
-                className="input !py-1.5 !text-[12px]"
-                value={form.dataClass}
-                onChange={(event) => set("dataClass", event.target.value as DataClass)}
-              >
-                {(["official", "imported", "admin-verified", "user-submitted"] as DataClass[]).map(
-                  (value) => (
-                    <option key={value} value={value}>{DATA_CLASS_LABELS[value]}</option>
-                  ),
-                )}
-              </select>
+        ) : modalTab === "representatives" && activeProject ? (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-navy-900/10 bg-cream-50 p-3">
+              <p className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[0.12em] text-ink-400">
+                <Users size={11} /> Link representative attribution
+              </p>
+              <p className="mt-1 text-[10px] text-ink-500">
+                Link an elected representative to this project only with a documented basis.
+              </p>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <select
+                  value={repId}
+                  onChange={(event) => setRepId(event.target.value)}
+                  className="input !py-1.5 !text-[11px]"
+                  aria-label="Select representative"
+                >
+                  <option value="">Select a representative…</option>
+                  {(repsData.data?.representatives ?? []).map((rep) => (
+                    <option key={rep.id} value={rep.id}>
+                      {rep.name} ({rep.constituency} · {rep.state})
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={repBasis}
+                  onChange={(event) =>
+                    setRepBasis(event.target.value as ConstituencyVerification)
+                  }
+                  className="input !py-1.5 !text-[11px]"
+                  aria-label="Attribution basis"
+                >
+                  <option value="admin-verified">Administrator-verified source</option>
+                  <option value="verified-boundary">Verified boundary match</option>
+                  <option value="unverified">Unverified context</option>
+                </select>
+                <input
+                  value={repNote}
+                  onChange={(event) => setRepNote(event.target.value)}
+                  placeholder="Verification note (optional)"
+                  className="input !py-1.5 !text-[11px]"
+                  aria-label="Representative attribution note"
+                />
+                <div className="flex gap-2">
+                  <input
+                    value={repSourceUrl}
+                    onChange={(event) => setRepSourceUrl(event.target.value)}
+                    placeholder="Evidence URL (https://…)"
+                    className="input !py-1.5 !text-[11px]"
+                    aria-label="Representative attribution source URL"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    loading={linkingRep}
+                    onClick={linkRepresentative}
+                  >
+                    Link
+                  </Button>
+                </div>
+              </div>
             </div>
-          ) : null}
-          <div>
-            <label className="field-label" htmlFor="record-verification">Verification state</label>
-            <select
-              id="record-verification"
-              className="input !py-1.5 !text-[12px]"
-              value={form.verificationStatus}
-              onChange={(event) =>
-                set("verificationStatus", event.target.value as VerificationStatus)
-              }
-            >
-              {Object.entries(VERIFICATION_LABELS).map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
+
+            {activeProject.representatives.length === 0 ? (
+              <p className="py-4 text-center text-xs text-ink-400">
+                No representatives linked to this project.
+              </p>
+            ) : (
+              <ul className="divide-y divide-navy-900/8 rounded-lg border border-navy-900/10 bg-white">
+                {activeProject.representatives.map((link) => {
+                  const rep = repsData.data?.representatives.find(
+                    (r) => r.id === link.representativeId,
+                  );
+                  return (
+                    <li key={link.representativeId} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                      <div className="min-w-0">
+                        <p className="text-[11.5px] font-bold text-navy-900">
+                          {rep ? `${rep.name} (${rep.constituency})` : link.representativeId}
+                        </p>
+                        <p className="text-[9.5px] text-ink-400">
+                          {link.basis}
+                          {link.note ? ` · ${link.note}` : ""}
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => unlinkRepresentative(link.representativeId)}
+                        icon={<Unlink size={12} />}
+                      >
+                        Unlink
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
-        </div>
+        ) : null}
 
-        <div>
-          <label className="field-label" htmlFor="record-caveats">Caveats (one per line)</label>
-          <textarea
-            id="record-caveats"
-            className="input min-h-[70px] !py-1.5 !text-[12px]"
-            value={form.caveats}
-            onChange={(event) => set("caveats", event.target.value)}
-          />
-        </div>
-
-        <div className="rounded-lg border border-navy-900/10 bg-cream-50 p-3">
-          <p className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[0.12em] text-ink-400">
-            <Users size={11} /> Link representative attribution
+        {!isCreate && activeProject ? (
+          <p className="text-[10px] text-ink-400">
+            Last updated {formatDate(activeProject.lastUpdated)} · Last verified{" "}
+            {activeProject.lastVerifiedAt ? formatDate(activeProject.lastVerifiedAt) : "never"} ·{" "}
+            {activeProject.dataClass === "demonstration"
+              ? "Demonstration record: financial claims are not real. Keep it labelled."
+              : "Every correction should be supported by the cited source."}
           </p>
-          <p className="mt-1 text-[10px] text-ink-500">
-            Link an elected representative to this project only with a documented basis.
-            Currently linked: {project.representatives.length} record{project.representatives.length === 1 ? "" : "s"}.
-          </p>
-          <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            <select
-              value={repId}
-              onChange={(event) => setRepId(event.target.value)}
-              className="input !py-1.5 !text-[11px]"
-              aria-label="Select representative"
-            >
-              <option value="">Select a representative…</option>
-              {(repsData.data?.representatives ?? []).map((rep) => (
-                <option key={rep.id} value={rep.id}>
-                  {rep.name} ({rep.constituency} · {rep.state})
-                </option>
-              ))}
-            </select>
-            <select
-              value={repBasis}
-              onChange={(event) =>
-                setRepBasis(event.target.value as ConstituencyVerification)
-              }
-              className="input !py-1.5 !text-[11px]"
-              aria-label="Attribution basis"
-            >
-              <option value="admin-verified">Administrator-verified source</option>
-              <option value="verified-boundary">Verified boundary match</option>
-              <option value="unverified">Unverified context</option>
-            </select>
-            <input
-              value={repNote}
-              onChange={(event) => setRepNote(event.target.value)}
-              placeholder="Verification note (optional)"
-              className="input !py-1.5 !text-[11px]"
-              aria-label="Representative attribution note"
-            />
-            <div className="flex gap-2">
-              <input
-                value={repSourceUrl}
-                onChange={(event) => setRepSourceUrl(event.target.value)}
-                placeholder="Evidence URL (https://…)"
-                className="input !py-1.5 !text-[11px]"
-                aria-label="Representative attribution source URL"
-              />
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                loading={linkingRep}
-                onClick={linkRepresentative}
-              >
-                Link
-              </Button>
-            </div>
-          </div>
-        </div>
-
-        <p className="text-[10px] text-ink-400">
-          Last updated {formatDate(project.lastUpdated)} · Last verified{" "}
-          {project.lastVerifiedAt ? formatDate(project.lastVerifiedAt) : "never"} ·{" "}
-          {project.dataClass === "demonstration"
-            ? "Demonstration record: financial claims are not real. Keep it labelled."
-            : "Every correction should be supported by the cited source."}
-        </p>
+        ) : null}
       </form>
     </Modal>
   );

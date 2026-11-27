@@ -1,10 +1,13 @@
 import { useMemo, useRef, useState } from "react";
+import { GeoJSON, MapContainer, TileLayer } from "react-leaflet";
 import {
   AlertCircle,
   CheckCircle2,
   FileJson,
+  GitMerge,
   Map as MapIcon,
   ShieldCheck,
+  Trash2,
   UploadCloud,
 } from "lucide-react";
 import {
@@ -37,8 +40,15 @@ export default function AdminGeoPage() {
   const [text, setText] = useState("");
   const [fileName, setFileName] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [matching, setMatching] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<{ features: number } | null>(null);
+  const [matchResult, setMatchResult] = useState<{
+    scanned: number;
+    matchedProjects: number;
+    newLinks: number;
+  } | null>(null);
 
   const status = useApiData<GeoResponse>("/geo/constituencies");
 
@@ -56,6 +66,48 @@ export default function AdminGeoPage() {
   const invalidShape =
     parsed !== null &&
     (parsed.type !== "FeatureCollection" || !Array.isArray(parsed.features));
+  const previewGeo =
+    parsed && !invalidShape && featureCount > 0
+      ? (parsed as GeoJSON.GeoJsonObject)
+      : (status.data as GeoJSON.GeoJsonObject | null);
+
+  const runMatch = async () => {
+    setError(null);
+    setMatchResult(null);
+    setMatching(true);
+    try {
+      const response = await apiFetch<{
+        scanned: number;
+        matchedProjects: number;
+        newLinks: number;
+      }>("/admin/geo/match-projects", { method: "POST" });
+      setMatchResult(response);
+      toast.push("Boundary matching complete", {
+        description: `${response.matchedProjects} of ${response.scanned} projects matched; ${response.newLinks} new links added.`,
+        tone: "success",
+      });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not match projects.");
+    } finally {
+      setMatching(false);
+    }
+  };
+
+  const clearDataset = async () => {
+    setError(null);
+    setClearing(true);
+    try {
+      await apiFetch("/admin/geo/constituencies", { method: "DELETE" });
+      setSaved(null);
+      setMatchResult(null);
+      status.refresh();
+      toast.push("Boundary dataset cleared", { tone: "info" });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not clear dataset.");
+    } finally {
+      setClearing(false);
+    }
+  };
 
   const readFile = async (file: File | null) => {
     setError(null);
@@ -159,10 +211,44 @@ export default function AdminGeoPage() {
         {status.loading ? (
           <p className="mt-3 text-[11.5px] text-ink-400">Checking stored boundaries…</p>
         ) : status.data ? (
-          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-teal-500/25 bg-teal-50/60 px-3 py-2 text-[11px] text-teal-800">
-            <CheckCircle2 size={14} />
-            Boundary dataset present · {status.data.features?.length ?? 0} features · loaded from
-            the administrator store.
+          <div className="mt-3 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-teal-500/25 bg-teal-50/60 px-3 py-2 text-[11px] text-teal-800">
+              <span className="flex items-center gap-2">
+                <CheckCircle2 size={14} />
+                Boundary dataset present · {status.data.features?.length ?? 0} features · loaded
+                from the administrator store.
+              </span>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="teal"
+                  loading={matching}
+                  onClick={runMatch}
+                  icon={<GitMerge size={12} />}
+                >
+                  Match verified projects to boundaries
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  loading={clearing}
+                  onClick={clearDataset}
+                  icon={<Trash2 size={12} />}
+                >
+                  Clear stored boundaries
+                </Button>
+              </div>
+            </div>
+            {matchResult ? (
+              <p className="rounded-lg border border-teal-500/20 bg-white px-3 py-2 text-[11px] text-ink-700">
+                Scanned <strong>{matchResult.scanned}</strong> verified-coordinate projects:{" "}
+                <strong>{matchResult.matchedProjects}</strong> sit inside uploaded polygons,{" "}
+                <strong>{matchResult.newLinks}</strong> new verified-boundary representative link
+                {matchResult.newLinks === 1 ? "" : "s"} created.
+              </p>
+            ) : null}
           </div>
         ) : (
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-navy-900/10 bg-cream-50 px-3 py-2 text-[11px] text-ink-500">
@@ -171,6 +257,38 @@ export default function AdminGeoPage() {
               "No constituency boundary dataset is configured. Constituency attribution remains “not verified” until one is uploaded and checked."}
           </div>
         )}
+
+        {previewGeo ? (
+          <div className="mt-4 overflow-hidden rounded-xl border border-navy-900/10">
+            <MapContainer
+              center={[22.5, 79.5]}
+              zoom={4}
+              scrollWheelZoom={false}
+              style={{ height: 300, width: "100%" }}
+            >
+              <TileLayer
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
+              <GeoJSON
+                key={`admin-geo-${JSON.stringify(previewGeo).length}`}
+                data={previewGeo}
+                style={{
+                  color: "#0e7c7b",
+                  weight: 1.8,
+                  fillColor: "#149a97",
+                  fillOpacity: 0.12,
+                }}
+                onEachFeature={(feature, layer) => {
+                  const props = (feature.properties ?? {}) as Record<string, unknown>;
+                  const name = String(props.name ?? props.constituency ?? "Constituency");
+                  const state = props.state ? ` · ${String(props.state)}` : "";
+                  layer.bindTooltip(`${name}${state}`, { sticky: true });
+                }}
+              />
+            </MapContainer>
+          </div>
+        ) : null}
       </section>
 
       <form onSubmit={submit} className="grid gap-5 xl:grid-cols-[1.6fr_1fr]">

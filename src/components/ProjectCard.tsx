@@ -1,9 +1,12 @@
 import { Link } from "react-router-dom";
 import {
   ArrowUpRight,
+  Bookmark,
+  BookmarkCheck,
   Box,
   Building2,
   Droplets,
+  GitCompareArrows,
   HeartPulse,
   Home,
   MapPin,
@@ -54,7 +57,19 @@ export function CategoryIcon({
   return <Icon size={size} className={className} />;
 }
 
-export function ProjectCard({ project }: { project: Project }) {
+export function ProjectCard({
+  project,
+  followed = false,
+  onToggleFollow,
+  compared = false,
+  onToggleCompare,
+}: {
+  project: Project;
+  followed?: boolean;
+  onToggleFollow?: (id: string) => void;
+  compared?: boolean;
+  onToggleCompare?: (project: Project) => void;
+}) {
   const isDemo = project.dataClass === "demonstration";
   const cost = project.revisedBudget ?? project.approvedBudget;
   const progress = project.physicalProgress;
@@ -65,7 +80,9 @@ export function ProjectCard({ project }: { project: Project }) {
         "group relative flex h-full flex-col rounded-xl border bg-white p-4 transition duration-200 hover:-translate-y-0.5 hover:shadow-lift",
         isDemo
           ? "border-gold-500/30 bg-[linear-gradient(180deg,rgba(246,237,210,0.35),rgba(255,255,255,0)_45%)]"
-          : "border-navy-900/10 hover:border-teal-500/35",
+          : compared
+            ? "border-teal-500/60 ring-1 ring-teal-500/20"
+            : "border-navy-900/10 hover:border-teal-500/35",
       )}
     >
       <div className="flex items-start justify-between gap-2">
@@ -73,7 +90,43 @@ export function ProjectCard({ project }: { project: Project }) {
           <CategoryIcon category={project.category} size={12} />
           {CATEGORY_LABELS[project.category]}
         </span>
-        <StatusBadge status={project.status} />
+        <div className="flex items-center gap-1">
+          <StatusBadge status={project.status} />
+          {onToggleCompare ? (
+            <button
+              type="button"
+              onClick={() => onToggleCompare(project)}
+              className={cn(
+                "rounded-md p-1 transition",
+                compared
+                  ? "bg-teal-50 text-teal-700"
+                  : "text-ink-400 hover:bg-cream-100 hover:text-navy-900",
+              )}
+              aria-label={compared ? `Remove ${project.name} from comparison` : `Compare ${project.name}`}
+              aria-pressed={compared}
+              title="Compare"
+            >
+              <GitCompareArrows size={13} />
+            </button>
+          ) : null}
+          {onToggleFollow ? (
+            <button
+              type="button"
+              onClick={() => onToggleFollow(project.id)}
+              className={cn(
+                "rounded-md p-1 transition",
+                followed
+                  ? "bg-navy-900 text-cream-50"
+                  : "text-ink-400 hover:bg-cream-100 hover:text-navy-900",
+              )}
+              aria-label={followed ? `Unsave ${project.name}` : `Save ${project.name}`}
+              aria-pressed={followed}
+              title={followed ? "Saved" : "Save project"}
+            >
+              {followed ? <BookmarkCheck size={13} /> : <Bookmark size={13} />}
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <Link to={`/projects/${project.id}`} className="mt-3 block">
@@ -136,22 +189,21 @@ export function ProjectCard({ project }: { project: Project }) {
         </div>
       </div>
 
-      <div className="mt-auto pt-3">
+      <div className="mt-auto flex items-center justify-between gap-2 pt-3">
         <SourceLine
           organisation={project.sourceOrganisation}
           url={project.sourceUrl}
           retrievedAt={project.retrievedAt}
-          className="line-clamp-1"
+          className="line-clamp-1 flex-1"
         />
+        <Link
+          to={`/projects/${project.id}`}
+          className="shrink-0 rounded-md p-1 text-ink-400 transition hover:bg-cream-100 hover:text-navy-900"
+          aria-label={`Open ${project.name}`}
+        >
+          <ArrowUpRight size={14} />
+        </Link>
       </div>
-
-      <Link
-        to={`/projects/${project.id}`}
-        className="absolute right-3 top-3 hidden rounded-md p-1 text-ink-400 transition group-hover:block hover:bg-cream-100 hover:text-navy-900"
-        aria-label={`Open ${project.name}`}
-      >
-        <ArrowUpRight size={14} />
-      </Link>
     </article>
   );
 }

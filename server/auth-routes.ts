@@ -182,6 +182,7 @@ authRouter.post(
       verificationExpiresAt: new Date(Date.now() + 24 * 3_600_000).toISOString(),
       authProvider: "local",
       officialVerified: false,
+      followedProjectIds: [],
       createdAt: new Date().toISOString(),
       lastLoginAt: null,
     };
@@ -447,6 +448,45 @@ authRouter.post("/verify-email", (req, res) => {
   });
   res.json({ message: "Email verified. You can now sign in." });
 });
+
+authRouter.post(
+  "/resend-verification",
+  rateLimit({ windowMs: 15 * 60_000, max: 10, keyPrefix: "resend-verify" }),
+  (req: AuthedRequest, res) => {
+    const parsed = forgotSchema.safeParse(req.body);
+    if (!parsed.success) return validationError(res, parsed.error);
+    const user = findUserByEmail(parsed.data.email);
+    const demo = isDemoMode();
+    let verificationUrl: string | null = null;
+
+    if (user && user.authProvider === "local" && !user.emailVerified) {
+      const rawToken = randomToken(24);
+      user.verificationTokenHash = sha256(rawToken);
+      user.verificationExpiresAt = new Date(Date.now() + 24 * 3_600_000).toISOString();
+      saveDb();
+      audit({
+        actorId: user.id,
+        actorName: user.fullName,
+        action: "auth.resend_verification",
+        entityType: "auth",
+        entityId: user.id,
+        summary: `Reissued verification link for ${user.email}.`,
+        before: null,
+        after: null,
+      });
+      if (demo) {
+        verificationUrl = `${baseUrl(req)}/verify-email?token=${rawToken}`;
+      }
+    }
+
+    res.json({
+      message:
+        "If an unverified local account exists for that email, a fresh verification link has been created.",
+      demoMode: demo,
+      verificationUrl,
+    });
+  },
+);
 
 authRouter.patch("/profile", requireAuth, (req: AuthedRequest, res) => {
   const schema = z.object({

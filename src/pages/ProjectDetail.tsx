@@ -5,6 +5,8 @@ import {
   ArrowLeft,
   ArrowUpRight,
   Banknote,
+  Bookmark,
+  BookmarkCheck,
   Building2,
   CalendarDays,
   CheckCircle2,
@@ -27,7 +29,9 @@ import {
   Wallet,
 } from "lucide-react";
 import type {
+  BoundaryMatch,
   Complaint,
+  ComplaintStatus,
   Project,
   Representative,
   RepresentativeLink,
@@ -63,13 +67,14 @@ import { RepresentativeCard } from "@/components/RepresentativeCard";
 import { useApiData } from "@/hooks/useApiData";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
+import { useWatchlist } from "@/hooks/useWatchlist";
 import { ApiError, apiFetch } from "@/services/api";
-import { CATEGORY_LABELS as CATEGORY_LABELS_2 } from "@shared/format";
 
 interface DetailResponse {
   project: Project;
   areaRepresentatives: Representative[];
   verifiedRepresentatives: (RepresentativeLink & { representative: Representative })[];
+  boundaryMatches: BoundaryMatch[];
   complaints: Complaint[];
   source: { organisation: string; url: string | null; retrievedAt: string };
 }
@@ -94,6 +99,8 @@ export default function ProjectDetailPage() {
   );
   const toast = useToast();
   const { user } = useAuth();
+  const { isFollowed, toggle: toggleFollow } = useWatchlist();
+  const geoData = useApiData<GeoJSON.GeoJsonObject>("/geo/constituencies");
 
   const setTab = (next: string) => {
     const updated = new URLSearchParams(searchParams);
@@ -127,7 +134,8 @@ export default function ProjectDetailPage() {
     );
   }
 
-  const { project, areaRepresentatives, verifiedRepresentatives, complaints } = data;
+  const { project, areaRepresentatives, verifiedRepresentatives, boundaryMatches = [], complaints } = data;
+  const followed = isFollowed(project.id);
   const isDemo = project.dataClass === "demonstration";
   const cityLink = project.citySlug
     ? `/cities/${project.stateSlug}/${project.citySlug}`
@@ -192,6 +200,14 @@ export default function ProjectDetailPage() {
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
+              <Button
+                variant={followed ? "teal" : "outline"}
+                size="sm"
+                onClick={() => toggleFollow(project.id)}
+                icon={followed ? <BookmarkCheck size={13} /> : <Bookmark size={13} />}
+              >
+                {followed ? "Saved" : "Save project"}
+              </Button>
               <Button variant="outline" size="sm" onClick={copyLink} icon={<Copy size={13} />}>
                 Copy link
               </Button>
@@ -236,7 +252,11 @@ export default function ProjectDetailPage() {
         {/* Media */}
         {project.lat !== null && project.lng !== null && project.coordinatesVerified ? (
           <div>
-            <ProjectMap project={project} height={370} />
+            <ProjectMap
+              project={project}
+              height={370}
+              constituenciesGeoJson={geoData.data}
+            />
             <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px] text-ink-400">
               <MapPin size={10} />
               Coordinate published by the cited source. Map: OpenStreetMap.
@@ -320,6 +340,7 @@ export default function ProjectDetailPage() {
               project={project}
               areaRepresentatives={areaRepresentatives}
               verifiedRepresentatives={verifiedRepresentatives}
+              boundaryMatches={boundaryMatches}
             />
           ) : tab === "documents" ? (
             <DocumentsTab project={project} />
@@ -710,16 +731,38 @@ function ProgressTab({ project }: { project: Project }) {
       <aside className="space-y-4">
         <section className="card p-5">
           <h3 className="font-display text-lg">Progress photographs</h3>
-          <div className="mt-3 rounded-lg border border-dashed border-navy-900/15 px-4 py-8 text-center">
-            <Ruler size={20} className="mx-auto text-ink-300" />
-            <p className="mt-2 text-[11px] font-semibold text-ink-500">
-              No verified progress photograph
-            </p>
-            <p className="mt-1 text-[10px] leading-relaxed text-ink-400">
-              Samaj Darpan does not use stock or unrelated imagery as project evidence.
-              Only source-published photographs would appear here.
-            </p>
-          </div>
+          {(() => {
+            const photos = project.documents.filter((d) => d.kind === "photograph");
+            if (photos.length === 0) {
+              return (
+                <div className="mt-3 rounded-lg border border-dashed border-navy-900/15 px-4 py-8 text-center">
+                  <Ruler size={20} className="mx-auto text-ink-300" />
+                  <p className="mt-2 text-[11px] font-semibold text-ink-500">
+                    No verified progress photograph
+                  </p>
+                  <p className="mt-1 text-[10px] leading-relaxed text-ink-400">
+                    Samaj Darpan does not use stock or unrelated imagery as project evidence.
+                    Only source-published photographs would appear here.
+                  </p>
+                </div>
+              );
+            }
+            return (
+              <ul className="mt-3 space-y-3">
+                {photos.map((photo) => (
+                  <li key={photo.id} className="overflow-hidden rounded-lg border border-navy-900/10 bg-cream-50">
+                    <a href={photo.url} target="_blank" rel="noreferrer noopener" className="block p-3 hover:bg-cream-100">
+                      <p className="text-[11.5px] font-bold text-navy-900">{photo.title}</p>
+                      <p className="mt-0.5 text-[9.5px] text-ink-400">
+                        {photo.sourceOrganisation ?? project.sourceOrganisation}
+                        {photo.publishedAt ? ` · ${formatDate(photo.publishedAt)}` : ""} ↗
+                      </p>
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            );
+          })()}
         </section>
         <section className="card p-5">
           <h3 className="font-display text-lg">Completion dates</h3>
@@ -813,10 +856,12 @@ function AccountabilityTab({
   project,
   areaRepresentatives,
   verifiedRepresentatives,
+  boundaryMatches,
 }: {
   project: Project;
   areaRepresentatives: Representative[];
   verifiedRepresentatives: (RepresentativeLink & { representative: Representative })[];
+  boundaryMatches: BoundaryMatch[];
 }) {
   return (
     <div className="space-y-5">
@@ -927,6 +972,48 @@ function AccountabilityTab({
           </div>
         )}
       </section>
+
+      {boundaryMatches.length > 0 ? (
+        <section className="card p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="font-display text-xl">Point-in-polygon constituency match</h2>
+              <p className="mt-1 text-[11px] text-ink-500">
+                Matched from the project's coordinates against uploaded GeoJSON constituency
+                boundaries. Geographic containment identifies the constituency area, not
+                executive project sponsorship.
+              </p>
+            </div>
+            <Badge tone="teal">
+              <MapPin size={10} /> {boundaryMatches.length} boundary match{boundaryMatches.length === 1 ? "" : "es"}
+            </Badge>
+          </div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            {boundaryMatches.map((match) => (
+              <div
+                key={`${match.name}-${match.house ?? ""}`}
+                className="rounded-lg border border-teal-500/25 bg-teal-50/40 p-3"
+              >
+                <p className="text-[12px] font-bold text-navy-900">{match.name}</p>
+                <p className="text-[10px] text-ink-500">
+                  {match.house ? match.house.replace("-", " ") : "Constituency"}
+                  {match.state ? ` · ${match.state}` : ""}
+                </p>
+                {match.matchedRepresentativeName ? (
+                  <p className="mt-1.5 text-[11px] font-semibold text-teal-800">
+                    Recorded representative: {match.matchedRepresentativeName}
+                    {match.party ? ` (${match.party})` : ""}
+                  </p>
+                ) : (
+                  <p className="mt-1.5 text-[10px] italic text-ink-400">
+                    No matching representative record in directory.
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {verifiedRepresentatives.length > 0 ? (
         <section className="card p-5">
@@ -1124,6 +1211,8 @@ function ComplaintsTab({
   const [error, setError] = useState<string | null>(null);
 
   const isDemo = project.dataClass === "demonstration";
+  const canReview = user?.role === "admin" || user?.role === "official";
+  const publicCount = complaints.filter((c) => c.isPublic).length;
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -1176,7 +1265,12 @@ function ComplaintsTab({
         <section className="card p-5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="font-display text-xl">Citizen complaints on this project</h2>
-            <Badge tone="neutral">{complaints.length} public</Badge>
+            <div className="flex items-center gap-1.5">
+              <Badge tone="neutral">{publicCount} public</Badge>
+              {complaints.length > publicCount ? (
+                <Badge tone="amber">{complaints.length - publicCount} private visible to you</Badge>
+              ) : null}
+            </div>
           </div>
           <p className="mt-1 text-[11px] text-ink-400">
             Complaints are citizen reports, not verified government findings. Resolution
@@ -1198,7 +1292,10 @@ function ComplaintsTab({
                 <li key={complaint.id} className="py-4">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <p className="text-[12.5px] font-bold text-navy-900">{complaint.title}</p>
-                    <Badge tone={statusTone[complaint.status]}>{complaint.status}</Badge>
+                    <div className="flex items-center gap-1.5">
+                      {!complaint.isPublic ? <Badge tone="amber">Non-public</Badge> : null}
+                      <Badge tone={statusTone[complaint.status]}>{complaint.status}</Badge>
+                    </div>
                   </div>
                   <p className="mt-1 text-[11px] leading-relaxed text-ink-600">{complaint.description}</p>
                   <p className="mt-1.5 text-[9.5px] text-ink-400">
@@ -1208,6 +1305,9 @@ function ComplaintsTab({
                     <div className="mt-2 rounded-md bg-teal-50 px-2.5 py-2 text-[10.5px] text-teal-800">
                       <strong>Official response:</strong> {complaint.resolutionNote}
                     </div>
+                  ) : null}
+                  {canReview ? (
+                    <InlineComplaintReview complaint={complaint} onUpdated={onChanged} />
                   ) : null}
                 </li>
               ))}
@@ -1300,6 +1400,71 @@ function ComplaintsTab({
           </p>
         </section>
       </aside>
+    </div>
+  );
+}
+
+function InlineComplaintReview({
+  complaint,
+  onUpdated,
+}: {
+  complaint: Complaint;
+  onUpdated: () => void;
+}) {
+  const toast = useToast();
+  const [status, setStatus] = useState<ComplaintStatus>(complaint.status);
+  const [note, setNote] = useState(complaint.resolutionNote ?? "");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const dirty =
+    status !== complaint.status || note.trim() !== (complaint.resolutionNote ?? "");
+
+  const save = async () => {
+    setErr(null);
+    setSaving(true);
+    try {
+      await apiFetch(`/complaints/${complaint.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          status,
+          resolutionNote: note.trim() ? note.trim() : null,
+        }),
+      });
+      toast.push("Complaint status updated", { tone: "success" });
+      onUpdated();
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : "Could not update complaint.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mt-2.5 rounded-lg border border-navy-900/10 bg-cream-50 p-2.5">
+      {err ? <p className="mb-1.5 text-[10.5px] font-semibold text-red-700">{err}</p> : null}
+      <div className="grid gap-2 sm:grid-cols-[140px_1fr_auto]">
+        <select
+          value={status}
+          onChange={(e) => setStatus(e.target.value as ComplaintStatus)}
+          className="input !py-1.5 !text-[11px]"
+          aria-label="Update complaint status"
+        >
+          <option value="open">Open</option>
+          <option value="in-review">In review</option>
+          <option value="resolved">Resolved</option>
+          <option value="rejected">Rejected</option>
+        </select>
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Official response note (optional)"
+          className="input !py-1.5 !text-[11px]"
+          aria-label="Official response note"
+        />
+        <Button size="sm" onClick={save} loading={saving} disabled={!dirty}>
+          Save
+        </Button>
+      </div>
     </div>
   );
 }

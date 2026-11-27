@@ -7,9 +7,10 @@ import {
   Search,
   ShieldCheck,
   ShieldQuestion,
+  X,
 } from "lucide-react";
 import type { ProjectStatus } from "@shared/types";
-import { STATUS_LABELS } from "@shared/format";
+import { STATUS_LABELS, formatINRCompact } from "@shared/format";
 import {
   Badge,
   EmptyState,
@@ -25,6 +26,7 @@ interface ContractorEntry {
   name: string;
   projectCount: number;
   verified: boolean;
+  totalBudget: number | null;
   sources: string[];
   projects: {
     id: string;
@@ -42,17 +44,19 @@ interface ContractorsResponse {
 export default function ContractorsPage() {
   const { city, cityName } = useCity();
   const [q, setQ] = useState("");
+  const [verifiedOnly, setVerifiedOnly] = useState(false);
 
   const { data, loading, error, refresh } = useApiData<ContractorsResponse>(
     `/contractors${qs({ state: city?.stateSlug, city: city?.slug })}`,
     [city?.slug],
   );
 
-  const contractors = (data?.contractors ?? []).filter((contractor) =>
-    q.trim()
+  const contractors = (data?.contractors ?? []).filter((contractor) => {
+    if (verifiedOnly && !contractor.verified) return false;
+    return q.trim()
       ? contractor.name.toLowerCase().includes(q.trim().toLowerCase())
-      : true,
-  );
+      : true;
+  });
 
   return (
     <div>
@@ -78,10 +82,29 @@ export default function ContractorsPage() {
               value={q}
               onChange={(event) => setQ(event.target.value)}
               placeholder="Search contractor name…"
-              className="input !py-2.5 !pl-9 !text-sm"
+              className="input !py-2.5 !pl-9 !pr-8 !text-sm"
               aria-label="Search contractors"
             />
+            {q ? (
+              <button
+                type="button"
+                onClick={() => setQ("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-ink-400 hover:text-navy-900"
+                aria-label="Clear search"
+              >
+                <X size={14} />
+              </button>
+            ) : null}
           </div>
+          <label className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-navy-900/12 bg-white px-2.5 py-2 text-[11px] font-semibold text-navy-900">
+            <input
+              type="checkbox"
+              checked={verifiedOnly}
+              onChange={(event) => setVerifiedOnly(event.target.checked)}
+              className="h-3.5 w-3.5 accent-teal-600"
+            />
+            Verified only
+          </label>
           <p className="text-[11px] text-ink-500">
             {contractors.length} record{contractors.length === 1 ? "" : "s"} for{" "}
             {city ? cityName : "India"}
@@ -126,6 +149,9 @@ export default function ContractorsPage() {
                 <p className="mt-1 text-[10.5px] text-ink-400">
                   Named in {contractor.projectCount} public project record
                   {contractor.projectCount === 1 ? "" : "s"}
+                  {contractor.totalBudget !== null
+                    ? ` · ${formatINRCompact(contractor.totalBudget)} combined project cost`
+                    : ""}
                 </p>
 
                 <ul className="mt-3 space-y-1.5 border-t hairline pt-3">

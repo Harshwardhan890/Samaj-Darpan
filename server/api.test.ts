@@ -71,10 +71,10 @@ describe("Samaj Darpan API end-to-end suite", () => {
   });
 
   it("lists, filters, and retrieves public projects and dashboards", async () => {
-    const all = await request("/api/projects?pageSize=50");
+    const all = await request("/api/projects?pageSize=60");
     assert.equal(all.status, 200);
-    assert.equal(all.body.total, 45);
-    assert.equal(all.body.scope.official, 5);
+    assert.equal(all.body.total, 52);
+    assert.equal(all.body.scope.official, 12);
     assert.equal(all.body.scope.demonstration, 40);
 
     const mumbai = await request("/api/projects?city=mumbai");
@@ -85,6 +85,8 @@ describe("Samaj Darpan API end-to-end suite", () => {
     assert.equal(detail.status, 200);
     assert.equal(detail.body.project.name, "Atal Bihari Vajpayee Sewri–Nhava Sheva Atal Setu");
     assert.ok(detail.body.areaRepresentatives.length > 0);
+    assert.ok(Array.isArray(detail.body.boundaryMatches));
+    assert.ok(detail.body.boundaryMatches.some((b: { name: string }) => b.name === "Mumbai South"));
 
     const missing = await request("/api/projects/non-existent-id");
     assert.equal(missing.status, 404);
@@ -477,5 +479,235 @@ describe("Samaj Darpan API end-to-end suite", () => {
     });
     assert.equal(csvExport.status, 200);
     assert.ok(String(csvExport.body).includes("Pune Ring Road Western Corridor"));
+  });
+
+  it("supports resend-verification, project watchlist, citizen submissions, contractors filtering, admin CRUD, geo matching, and CSV round-trip", async () => {
+    // 1. Register unverified user and resend verification link
+    const reg = await request("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({
+        fullName: "Vikram Verma",
+        email: "vikram@example.com",
+        phone: "9811122233",
+        password: "StrongPassword!2026",
+        confirmPassword: "StrongPassword!2026",
+        state: "Karnataka",
+        city: "bengaluru",
+        role: "citizen",
+      }),
+    });
+    assert.equal(reg.status, 201);
+
+    const resent = await request("/api/auth/resend-verification", {
+      method: "POST",
+      body: JSON.stringify({ email: "vikram@example.com" }),
+    });
+    assert.equal(resent.status, 200);
+    assert.ok(resent.body.verificationUrl);
+
+    const verifyToken = new URL(resent.body.verificationUrl).searchParams.get("token");
+    const verified = await request("/api/auth/verify-email", {
+      method: "POST",
+      body: JSON.stringify({ token: verifyToken }),
+    });
+    assert.equal(verified.status, 200);
+
+    const login = await request("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({
+        email: "vikram@example.com",
+        password: "StrongPassword!2026",
+      }),
+    });
+    assert.equal(login.status, 200);
+    const citizenCookie = login.cookie!;
+
+    // 2. Follow & unfollow project watchlist
+    const follow = await request("/api/projects/prj-atal-setu/follow", {
+      method: "POST",
+      cookie: citizenCookie,
+    });
+    assert.equal(follow.status, 200);
+    assert.ok(follow.body.followedProjectIds.includes("prj-atal-setu"));
+
+    const followedList = await request("/api/projects-followed", { cookie: citizenCookie });
+    assert.equal(followedList.status, 200);
+    assert.ok(followedList.body.projects.some((p: { id: string }) => p.id === "prj-atal-setu"));
+
+    const unfollow = await request("/api/projects/prj-atal-setu/follow", {
+      method: "DELETE",
+      cookie: citizenCookie,
+    });
+    assert.equal(unfollow.status, 200);
+    assert.ok(!unfollow.body.followedProjectIds.includes("prj-atal-setu"));
+
+    // 3. Citizen project submission
+    const submission = await request("/api/submissions/projects", {
+      method: "POST",
+      cookie: citizenCookie,
+      body: JSON.stringify({
+        name: "Hebbal Flyover Ramp Widening",
+        state: "Karnataka",
+        city: "Bengaluru",
+        category: "bridges",
+        status: "ongoing",
+        description: "Additional loop ramps under construction by BDA to ease airport corridor congestion.",
+        executingDepartment: "Bangalore Development Authority (BDA)",
+        approvedBudgetCrore: 225,
+        sourceOrganisation: "Bangalore Development Authority",
+        sourceUrl: "https://bdabangalore.org/hebbal-ramp",
+      }),
+    });
+    assert.equal(submission.status, 201);
+    assert.equal(submission.body.project.dataClass, "user-submitted");
+    assert.equal(submission.body.project.verificationStatus, "under-review");
+    assert.equal(submission.body.project.approvedBudget, 2_250_000_000);
+
+    // 4. Contractors endpoint excludes demo projects by default
+    const contractors = await request("/api/contractors");
+    assert.equal(contractors.status, 200);
+    assert.ok(contractors.body.contractors.length > 0);
+    assert.ok(
+      contractors.body.contractors.every((c: { projects: { id: string }[] }) =>
+        c.projects.every((p) => !p.id.startsWith("demo-")),
+      ),
+    );
+
+    // 5. Admin manual project creation, funding/responsibility patch, docs, unlink rep, geo match, rep CRUD
+    const adminLogin = await request("/api/auth/demo-login", {
+      method: "POST",
+      body: JSON.stringify({ role: "admin" }),
+    });
+    const adminCookie = adminLogin.cookie!;
+
+    const created = await request("/api/admin/projects", {
+      method: "POST",
+      cookie: adminCookie,
+      body: JSON.stringify({
+        name: "Pune Multimodal Transit Hub Phase I",
+        state: "Maharashtra",
+        city: "Pune",
+        category: "roads",
+        status: "ongoing",
+        sourceOrganisation: "PMRDA",
+        sourceUrl: "https://pmrda.gov.in/transit-hub",
+        approvedBudget: 12_000_000_000,
+        lat: 18.5289,
+        lng: 73.8475,
+        coordinatesVerified: true,
+        verificationStatus: "published",
+      }),
+    });
+    assert.equal(created.status, 201);
+    const createdId = created.body.project.id as string;
+
+    const patchedFunding = await request(`/api/admin/projects/${createdId}`, {
+      method: "PATCH",
+      cookie: adminCookie,
+      body: JSON.stringify({
+        funding: { state: 12_000_000_000, notes: "State agency funded." },
+        responsibility: { sanctioningAuthority: "Government of Maharashtra" },
+      }),
+    });
+    assert.equal(patchedFunding.status, 200);
+    assert.equal(patchedFunding.body.project.funding.state, 12_000_000_000);
+    assert.equal(
+      patchedFunding.body.project.responsibility.sanctioningAuthority,
+      "Government of Maharashtra",
+    );
+
+    const addedDoc = await request(`/api/admin/projects/${createdId}/documents`, {
+      method: "POST",
+      cookie: adminCookie,
+      body: JSON.stringify({
+        title: "CIDCO Tender Notice",
+        kind: "tender",
+        url: "https://cidco.maharashtra.gov.in/tender-01",
+      }),
+    });
+    assert.equal(addedDoc.status, 201);
+    const docId = addedDoc.body.document.id as string;
+
+    const removedDoc = await request(`/api/admin/projects/${createdId}/documents/${docId}`, {
+      method: "DELETE",
+      cookie: adminCookie,
+    });
+    assert.equal(removedDoc.status, 200);
+    assert.ok(!removedDoc.body.project.documents.some((d: { id: string }) => d.id === docId));
+
+    // Geo point-in-polygon batch matching
+    const geoMatched = await request("/api/admin/geo/match-projects", {
+      method: "POST",
+      cookie: adminCookie,
+    });
+    assert.equal(geoMatched.status, 200);
+    assert.ok(geoMatched.body.matchedProjects >= 1);
+    assert.ok(geoMatched.body.newLinks >= 1);
+
+    // Unlink matched rep from created project
+    const createdAfterMatch = await request(`/api/projects/${createdId}`);
+    assert.ok(createdAfterMatch.body.verifiedRepresentatives.length >= 1);
+    const linkedRepId = createdAfterMatch.body.verifiedRepresentatives[0].representativeId as string;
+
+    const unlinked = await request(
+      `/api/admin/projects/${createdId}/representatives/${linkedRepId}`,
+      { method: "DELETE", cookie: adminCookie },
+    );
+    assert.equal(unlinked.status, 200);
+    assert.equal(unlinked.body.project.representatives.length, 0);
+
+    // Admin representative create & verify
+    const createdRep = await request("/api/admin/representatives", {
+      method: "POST",
+      cookie: adminCookie,
+      body: JSON.stringify({
+        name: "Test MLA Representative",
+        role: "mla",
+        house: "vidhan-sabha",
+        position: "Member of Legislative Assembly",
+        constituency: "Worli",
+        state: "Maharashtra",
+        city: "Mumbai",
+        party: "Independent",
+        sourceOrganisation: "Election Commission of India",
+        sourceUrl: "https://results.eci.gov.in/",
+        verification: "unverified",
+      }),
+    });
+    assert.equal(createdRep.status, 201);
+    const newRepId = createdRep.body.representative.id as string;
+
+    const verifiedRep = await request(`/api/admin/representatives/${newRepId}`, {
+      method: "PATCH",
+      cookie: adminCookie,
+      body: JSON.stringify({ verification: "verified" }),
+    });
+    assert.equal(verifiedRep.status, 200);
+    assert.equal(verifiedRep.body.representative.verification, "verified");
+
+    // 6. CSV export -> re-import round-trip preserves approvedBudget with 0 currency warnings
+    const exported = await request(`/api/projects-export?ids=${createdId}&format=csv`);
+    assert.equal(exported.status, 200);
+    assert.ok(String(exported.body).includes("approved_cost_inr"));
+
+    const roundTripForm = new FormData();
+    roundTripForm.append(
+      "file",
+      new Blob([String(exported.body)], { type: "text/csv" }),
+      "roundtrip.csv",
+    );
+    roundTripForm.append("sourceOrganisation", "Roundtrip Test");
+    roundTripForm.append("dataClass", "imported");
+
+    const reimported = await request("/api/admin/import", {
+      method: "POST",
+      cookie: adminCookie,
+      body: roundTripForm,
+    });
+    assert.equal(reimported.status, 201);
+    assert.equal(reimported.body.job.errors.length, 0);
+    const reimportedId = reimported.body.outcome.projectIds[0] as string;
+    const reimportedDetail = await request(`/api/projects/${reimportedId}`);
+    assert.equal(reimportedDetail.body.project.approvedBudget, 12_000_000_000);
   });
 });

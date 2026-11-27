@@ -72,6 +72,7 @@ async function supabaseUser(token: string): Promise<UserRecord | null> {
         verificationExpiresAt: null,
         authProvider: "supabase",
         officialVerified: role === "admin",
+        followedProjectIds: [],
         createdAt: new Date().toISOString(),
         lastLoginAt: new Date().toISOString(),
       };

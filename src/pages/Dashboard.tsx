@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
@@ -64,13 +65,16 @@ interface DashboardResponse {
 
 export default function DashboardPage({ cityOverride }: { cityOverride?: City | null }) {
   const { city: contextCity, selectCity } = useCity();
+  const [excludeDemo, setExcludeDemo] = useState(false);
   const city = cityOverride !== undefined ? cityOverride : contextCity;
-  const scope = city
-    ? qs({ state: city.stateSlug, city: city.slug })
-    : "";
+  const scope = qs({
+    state: city?.stateSlug,
+    city: city?.slug,
+    includeDemo: excludeDemo ? "false" : undefined,
+  });
   const { data, loading, error, refresh } = useApiData<DashboardResponse>(
     `/dashboard${scope}`,
-    [city?.slug],
+    [city?.slug, excludeDemo],
   );
 
   if (loading) {
@@ -195,19 +199,32 @@ export default function DashboardPage({ cityOverride }: { cityOverride?: City | 
       </section>
 
       <div className="container-page space-y-8 py-8">
-        {demoCount > 0 ? (
-          <DataProvenanceNotice counts={stats.byProvenance} />
-        ) : (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-teal-500/20 bg-teal-50/50 px-4 py-3">
-            <p className="flex items-center gap-2 text-[12px] font-semibold text-teal-800">
-              <ShieldCheck size={15} /> All {stats.totalProjects} records in this view are
-              sourced public records, each with its provenance shown.
-            </p>
-            <Link to="/sources" className="text-[11px] font-bold text-teal-700 hover:text-teal-600">
-              Data sources →
-            </Link>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            {demoCount > 0 ? (
+              <DataProvenanceNotice counts={stats.byProvenance} />
+            ) : (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-teal-500/20 bg-teal-50/50 px-4 py-3">
+                <p className="flex items-center gap-2 text-[12px] font-semibold text-teal-800">
+                  <ShieldCheck size={15} /> All {stats.totalProjects} records in this view are
+                  sourced public records, each with its provenance shown.
+                </p>
+                <Link to="/sources" className="text-[11px] font-bold text-teal-700 hover:text-teal-600">
+                  Data sources →
+                </Link>
+              </div>
+            )}
           </div>
-        )}
+          <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-navy-900/12 bg-white px-3.5 py-2.5 text-[11.5px] font-bold text-navy-900 shadow-sm hover:border-teal-500/40">
+            <input
+              type="checkbox"
+              checked={excludeDemo}
+              onChange={(event) => setExcludeDemo(event.target.checked)}
+              className="h-3.5 w-3.5 accent-teal-600"
+            />
+            Sourced records only
+          </label>
+        </div>
 
         {/* ── Stat row ──────────────────────────────────────────────── */}
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -288,6 +305,13 @@ export default function DashboardPage({ cityOverride }: { cityOverride?: City | 
               icon={<FileCheck2 size={16} className="text-teal-600" />}
             >
               <BudgetComparison stats={stats} />
+            </ChartCard>
+            <ChartCard
+              title="Citizen complaint resolution"
+              subtitle="Platform reports in this view"
+              icon={<ClipboardList size={16} className="text-teal-600" />}
+            >
+              <ResolutionGauge stats={stats} />
             </ChartCard>
           </div>
         </section>

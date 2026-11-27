@@ -230,6 +230,15 @@ export interface ImportJob {
   projectIds: string[];
 }
 
+export interface BoundaryMatch {
+  name: string;
+  house: JurisdictionHouse | string | null;
+  state: string | null;
+  matchedRepresentativeId: string | null;
+  matchedRepresentativeName: string | null;
+  party: string | null;
+}
+
 export interface SessionUser {
   id: string;
   fullName: string;
@@ -240,6 +249,7 @@ export interface SessionUser {
   city: string | null;
   avatarUrl: string | null;
   emailVerified: boolean;
+  followedProjectIds: string[];
   createdAt: string;
   authProvider: "local" | "supabase";
 }

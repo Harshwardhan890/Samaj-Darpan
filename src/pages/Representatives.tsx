@@ -20,6 +20,7 @@ import {
   cn,
 } from "@/components/ui";
 import { RepresentativeCard } from "@/components/RepresentativeCard";
+import { useAuth } from "@/context/AuthContext";
 import { useCity } from "@/context/CityContext";
 import { useApiData } from "@/hooks/useApiData";
 import { qs } from "@/services/api";
@@ -33,6 +34,7 @@ const ROLE_FILTERS: { id: string; label: string }[] = [
 ];
 
 export default function RepresentativesPage() {
+  const { user } = useAuth();
   const { city, cityName } = useCity();
   const [role, setRole] = useState("all");
   const [q, setQ] = useState("");
@@ -72,10 +74,15 @@ export default function RepresentativesPage() {
         title="Political accountability"
         description="Elected representatives, their recorded constituencies and the public source behind each record. Representation is not the same as responsibility for a project."
         actions={
-          <>
+          <div className="flex flex-wrap items-center gap-2">
             <Badge tone="navy">{data?.total ?? 0} records</Badge>
             <Badge tone="teal">{verified} sourced</Badge>
-          </>
+            {user?.role === "admin" ? (
+              <Link to="/admin/representatives" className="btn btn-outline btn-sm">
+                Manage in admin
+              </Link>
+            ) : null}
+          </div>
         }
       />
 

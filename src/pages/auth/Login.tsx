@@ -15,7 +15,7 @@ import {
 import { AuthLayout, Button } from "@/components/ProtectedRoute";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
-import { ApiError } from "@/services/api";
+import { ApiError, apiFetch, toAppPath } from "@/services/api";
 import { isSupabaseConfigured, supabase } from "@/services/supabase";
 import { ROLE_LABELS } from "@shared/format";
 import type { UserRole } from "@shared/types";
@@ -39,6 +39,9 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [demoLoading, setDemoLoading] = useState<UserRole | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [unverifiedEmail, setUnverifiedEmail] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resentUrl, setResentUrl] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
 
   const rawNext = searchParams.get("next");
@@ -53,6 +56,8 @@ export default function LoginPage() {
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
+    setUnverifiedEmail(false);
+    setResentUrl(null);
     setFieldErrors({});
     if (!email.trim() || !password) {
       setError("Enter your email address and password.");
@@ -66,11 +71,39 @@ export default function LoginPage() {
       if (err instanceof ApiError) {
         setFieldErrors(err.fieldErrors);
         setError(err.message);
+        const code = (err.payload as { code?: string } | null)?.code;
+        if (code === "email_unverified") setUnverifiedEmail(true);
       } else {
         setError(err instanceof Error ? err.message : "Could not sign in.");
       }
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const resendVerification = async () => {
+    if (!email.trim()) return;
+    setResending(true);
+    try {
+      const response = await apiFetch<{
+        message: string;
+        verificationUrl: string | null;
+      }>("/auth/resend-verification", {
+        method: "POST",
+        body: JSON.stringify({ email: email.trim() }),
+      });
+      setResentUrl(response.verificationUrl);
+      toast.push("Verification link updated", {
+        description: response.message,
+        tone: "info",
+      });
+    } catch (err) {
+      toast.push("Could not resend verification", {
+        description: err instanceof ApiError ? err.message : "Try again shortly.",
+        tone: "error",
+      });
+    } finally {
+      setResending(false);
     }
   };
 
@@ -120,10 +153,35 @@ export default function LoginPage() {
         {error ? (
           <div
             role="alert"
-            className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-[12px] font-medium text-red-800"
+            className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-[12px] font-medium text-red-800"
           >
-            <AlertCircle size={15} className="mt-0.5 shrink-0" />
-            <span>{error}</span>
+            <div className="flex items-start gap-2">
+              <AlertCircle size={15} className="mt-0.5 shrink-0" />
+              <span>{error}</span>
+            </div>
+            {unverifiedEmail ? (
+              <div className="mt-2.5 flex flex-wrap gap-2 pl-5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  loading={resending}
+                  onClick={resendVerification}
+                >
+                  Resend verification link
+                </Button>
+                {resentUrl ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="gold"
+                    onClick={() => navigate(toAppPath(resentUrl))}
+                  >
+                    Verify this email now
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         ) : null}
 

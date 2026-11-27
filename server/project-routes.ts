@@ -9,9 +9,11 @@ import type {
   ProjectStatus,
 } from "../src/shared/types";
 import { CITIES } from "../src/shared/cities";
-import { audit, getDb, saveDb, type UserRecord } from "./db";
+import { audit, getDb, saveDb } from "./db";
 import { requireAuth, requireRole, roleAtLeast, type AuthedRequest } from "./auth";
+import { matchPointToConstituencies } from "./geo";
 import { uid } from "./password";
+import { rateLimit } from "./rateLimit";
 
 export const projectRouter = Router();
 
@@ -24,9 +26,51 @@ export interface ProjectFilters {
   dataClass?: string;
   verification?: string;
   includeDemonstration?: boolean;
+  ids?: string[];
+}
+
+export function projectsToCsv(projects: Project[]): string {
+  const columns: { header: string; get: (p: Project) => unknown }[] = [
+    { header: "project_id", get: (p) => p.id },
+    { header: "project_name", get: (p) => p.name },
+    { header: "description", get: (p) => p.description },
+    { header: "state", get: (p) => p.state },
+    { header: "city", get: (p) => p.city },
+    { header: "district", get: (p) => p.district },
+    { header: "category", get: (p) => p.category },
+    { header: "status", get: (p) => p.status },
+    { header: "approved_cost_inr", get: (p) => p.approvedBudget },
+    { header: "revised_cost_inr", get: (p) => p.revisedBudget },
+    { header: "expenditure_inr", get: (p) => p.expenditure },
+    { header: "physical_progress_percent", get: (p) => p.physicalProgress },
+    { header: "financial_progress_percent", get: (p) => p.financialProgress },
+    { header: "start_date", get: (p) => p.startDate },
+    { header: "expected_completion", get: (p) => p.expectedCompletion },
+    { header: "actual_completion", get: (p) => p.actualCompletion },
+    { header: "executing_department", get: (p) => p.executingDepartment },
+    { header: "funding_authority", get: (p) => p.fundingAuthority },
+    { header: "implementing_agency", get: (p) => p.implementingAgency },
+    { header: "contractor", get: (p) => p.contractor },
+    { header: "latitude", get: (p) => p.lat },
+    { header: "longitude", get: (p) => p.lng },
+    { header: "coordinates_verified", get: (p) => p.coordinatesVerified },
+    { header: "source_organisation", get: (p) => p.sourceOrganisation },
+    { header: "source_url", get: (p) => p.sourceUrl },
+    { header: "data_class", get: (p) => p.dataClass },
+    { header: "verification_status", get: (p) => p.verificationStatus },
+  ];
+  const escape = (value: unknown) => {
+    const s = value === null || value === undefined ? "" : String(value);
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [
+    columns.map((c) => c.header).join(","),
+    ...projects.map((p) => columns.map((c) => escape(c.get(p))).join(",")),
+  ].join("\n");
 }
 
 export function matchesScope(project: Project, filters: ProjectFilters): boolean {
+  if (filters.ids && !filters.ids.includes(project.id)) return false;
   if (filters.state && project.stateSlug !== filters.state) return false;
   if (filters.city && filters.city !== "india") {
     const city = CITIES.find(
@@ -200,23 +244,32 @@ function scopeComplaints(filters: ProjectFilters): Complaint[] {
   );
 }
 
+function queryToFilters(query: Record<string, unknown>): ProjectFilters {
+  const idsRaw = typeof query.ids === "string" ? query.ids : undefined;
+  const ids = idsRaw
+    ? idsRaw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : undefined;
+  return {
+    state: typeof query.state === "string" ? query.state : undefined,
+    city: typeof query.city === "string" ? query.city : undefined,
+    category: typeof query.category === "string" ? query.category : undefined,
+    status: typeof query.status === "string" ? query.status : undefined,
+    q: typeof query.q === "string" ? query.q : undefined,
+    dataClass: typeof query.dataClass === "string" ? query.dataClass : undefined,
+    verification:
+      typeof query.verification === "string" ? query.verification : undefined,
+    includeDemonstration: query.includeDemo !== "false",
+    ids,
+  };
+}
+
 projectRouter.get("/projects", (req, res) => {
   const page = Math.max(1, Number(req.query.page ?? 1) || 1);
   const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize ?? 12) || 12));
-  const filters: ProjectFilters = {
-    state: typeof req.query.state === "string" ? req.query.state : undefined,
-    city: typeof req.query.city === "string" ? req.query.city : undefined,
-    category: typeof req.query.category === "string" ? req.query.category : undefined,
-    status: typeof req.query.status === "string" ? req.query.status : undefined,
-    q: typeof req.query.q === "string" ? req.query.q : undefined,
-    dataClass:
-      typeof req.query.dataClass === "string" ? req.query.dataClass : undefined,
-    verification:
-      typeof req.query.verification === "string"
-        ? req.query.verification
-        : undefined,
-    includeDemonstration: req.query.includeDemo !== "false",
-  };
+  const filters = queryToFilters(req.query as Record<string, unknown>);
 
   let items = publicProjects(filters);
   const sort = String(req.query.sort ?? "recent");
@@ -258,7 +311,209 @@ projectRouter.get("/projects", (req, res) => {
   res.json(payload);
 });
 
-projectRouter.get("/projects/:id", (req, res) => {
+projectRouter.get("/projects-export", (req, res) => {
+  const filters = queryToFilters(req.query as Record<string, unknown>);
+  const items = publicProjects(filters);
+  const format = String(req.query.format ?? "csv");
+  if (format === "json") {
+    res.json({ projects: items, total: items.length, exportedAt: new Date().toISOString() });
+    return;
+  }
+  const csv = projectsToCsv(items);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="samaj-darpan-records.csv"');
+  res.send(csv);
+});
+
+projectRouter.get("/projects-followed", requireAuth, (req: AuthedRequest, res) => {
+  const ids = req.user!.followedProjectIds ?? [];
+  const projects = getDb().projects.filter(
+    (p) => ids.includes(p.id) && p.verificationStatus !== "rejected",
+  );
+  res.json({ projects, ids: projects.map((p) => p.id) });
+});
+
+projectRouter.post("/projects/:id/follow", requireAuth, (req: AuthedRequest, res) => {
+  const project = getDb().projects.find(
+    (p) => p.id === req.params.id && p.verificationStatus !== "rejected",
+  );
+  if (!project) {
+    res.status(404).json({ error: "Project not found." });
+    return;
+  }
+  const user = req.user!;
+  user.followedProjectIds ??= [];
+  if (!user.followedProjectIds.includes(project.id)) {
+    user.followedProjectIds = [project.id, ...user.followedProjectIds].slice(0, 200);
+    saveDb();
+  }
+  res.json({ followedProjectIds: user.followedProjectIds });
+});
+
+projectRouter.delete("/projects/:id/follow", requireAuth, (req: AuthedRequest, res) => {
+  const user = req.user!;
+  user.followedProjectIds = (user.followedProjectIds ?? []).filter(
+    (id) => id !== req.params.id,
+  );
+  saveDb();
+  res.json({ followedProjectIds: user.followedProjectIds });
+});
+
+const submissionSchema = z.object({
+  name: z.string().trim().min(3, "Enter a project title of at least 3 characters.").max(300),
+  state: z.string().trim().min(2, "Select or enter the state."),
+  city: z.string().trim().optional(),
+  district: z.string().trim().max(120).optional(),
+  category: z.enum([
+    "roads",
+    "bridges",
+    "metro",
+    "rail",
+    "airports",
+    "water",
+    "sanitation",
+    "housing",
+    "health",
+    "education",
+    "energy",
+    "parks",
+    "public-buildings",
+    "other",
+  ]),
+  status: z.enum(["planned", "ongoing", "completed", "delayed", "stalled", "unknown"]),
+  description: z
+    .string()
+    .trim()
+    .min(20, "Describe the public record in at least 20 characters.")
+    .max(4000),
+  executingDepartment: z.string().trim().max(240).optional(),
+  contractor: z.string().trim().max(240).optional(),
+  approvedBudgetCrore: z.number().nonnegative().max(1_000_000).nullable().optional(),
+  sourceOrganisation: z.string().trim().min(2, "Name the source organisation.").max(200),
+  sourceUrl: z
+    .string()
+    .trim()
+    .url("Provide a valid http:// or https:// source URL.")
+    .refine((u) => /^https?:\/\//i.test(u), "Source URL must start with http:// or https://."),
+});
+
+projectRouter.post(
+  "/submissions/projects",
+  requireAuth,
+  rateLimit({ windowMs: 15 * 60_000, max: 15, keyPrefix: "submit-project" }),
+  (req: AuthedRequest, res) => {
+    const parsed = submissionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "Please check the submitted project details.",
+        fieldErrors: z.flattenError(parsed.error).fieldErrors,
+      });
+      return;
+    }
+    const input = parsed.data;
+    const matchedCity = input.city
+      ? CITIES.find(
+          (c) =>
+            c.slug === input.city!.toLowerCase() ||
+            c.id === input.city!.toLowerCase() ||
+            c.name.toLowerCase() === input.city!.toLowerCase(),
+        )
+      : undefined;
+
+    const now = new Date().toISOString();
+    const id = uid("sub");
+    const approvedBudget =
+      typeof input.approvedBudgetCrore === "number" && input.approvedBudgetCrore > 0
+        ? Math.round(input.approvedBudgetCrore * 1e7)
+        : null;
+
+    const project: Project = {
+      id,
+      sourceId: null,
+      sourceOrganisation: input.sourceOrganisation,
+      sourceUrl: input.sourceUrl,
+      retrievedAt: now,
+      lastUpdated: now,
+      lastVerifiedAt: null,
+      dataClass: "user-submitted",
+      verificationStatus: "under-review",
+      name: input.name,
+      description: input.description,
+      state: matchedCity?.state ?? input.state,
+      stateSlug: matchedCity?.stateSlug ?? slugifyState(input.state),
+      city: matchedCity?.name ?? (input.city || null),
+      citySlug: matchedCity?.slug ?? null,
+      district: input.district || null,
+      lat: null,
+      lng: null,
+      coordinatesVerified: false,
+      category: input.category as ProjectCategory,
+      status: input.status as ProjectStatus,
+      executingDepartment: input.executingDepartment || null,
+      fundingAuthority: null,
+      implementingAgency: input.executingDepartment || null,
+      contractor: input.contractor || null,
+      approvedBudget,
+      revisedBudget: null,
+      expenditure: null,
+      currency: "INR",
+      startDate: null,
+      expectedCompletion: null,
+      actualCompletion: null,
+      physicalProgress: null,
+      financialProgress: null,
+      funding: {
+        central: null,
+        state: null,
+        municipal: null,
+        other: null,
+        otherSourceLabel: null,
+        notes: null,
+        sourceUrl: input.sourceUrl,
+      },
+      responsibility: {
+        sanctioningAuthority: null,
+        executingAgency: input.executingDepartment || null,
+        tenderingAuthority: null,
+        supervisingDepartment: input.executingDepartment || null,
+        contractor: input.contractor || null,
+        sourceUrl: input.sourceUrl,
+      },
+      representatives: [],
+      documents: [
+        {
+          id: uid("doc"),
+          title: `Submitted source — ${input.sourceOrganisation}`,
+          kind: "report",
+          url: input.sourceUrl,
+          publishedAt: null,
+          sourceOrganisation: input.sourceOrganisation,
+          addedAt: now,
+        },
+      ],
+      caveats: [
+        `Citizen-submitted record contributed by ${req.user!.fullName}. Awaiting administrator verification against the cited source.`,
+      ],
+      tags: ["user-submitted"],
+    };
+
+    getDb().projects.unshift(project);
+    saveDb();
+    audit({
+      actorId: req.user!.id,
+      actorName: req.user!.fullName,
+      action: "project.submit",
+      entityType: "project",
+      entityId: project.id,
+      summary: `Submitted citizen project record "${project.name}".`,
+      before: null,
+      after: { dataClass: project.dataClass, verificationStatus: project.verificationStatus },
+    });
+    res.status(201).json({ project });
+  },
+);
+
+projectRouter.get("/projects/:id", (req: AuthedRequest, res) => {
   const project = getDb().projects.find((p) => p.id === req.params.id);
   if (!project || project.verificationStatus === "rejected") {
     res.status(404).json({ error: "Project not found." });
@@ -280,14 +535,33 @@ projectRouter.get("/projects/:id", (req, res) => {
     })
     .filter(Boolean);
 
+  const boundaryMatches =
+    project.lat !== null && project.lng !== null && database.geo.constituencies
+      ? matchPointToConstituencies(
+          project.lat,
+          project.lng,
+          database.geo.constituencies,
+          database.representatives,
+        )
+      : [];
+
+  const isStateOfficial =
+    req.user?.role === "official" &&
+    Boolean(req.user.officialVerified) &&
+    slugifyState(req.user.state ?? "") === slugifyState(project.stateSlug ?? "");
+  const isAdmin = req.user?.role === "admin";
+
   const complaints = database.complaints.filter(
-    (c) => c.projectId === project.id && c.isPublic,
+    (c) =>
+      c.projectId === project.id &&
+      (c.isPublic || isAdmin || isStateOfficial || (req.user && c.authorId === req.user.id)),
   );
 
   res.json({
     project,
     areaRepresentatives: reps,
     verifiedRepresentatives: links,
+    boundaryMatches,
     complaints,
     source: {
       organisation: project.sourceOrganisation,
@@ -358,10 +632,11 @@ projectRouter.get("/representatives", (req, res) => {
 projectRouter.get("/contractors", (req, res) => {
   const city = typeof req.query.city === "string" ? req.query.city : undefined;
   const state = typeof req.query.state === "string" ? req.query.state : undefined;
-  const projects = publicProjects({ city, state });
+  const includeDemonstration = req.query.includeDemo === "true";
+  const projects = publicProjects({ city, state, includeDemonstration });
   const map = new Map<
     string,
-    { name: string; projects: Project[]; verified: boolean; sources: string[] }
+    { name: string; projects: Project[]; verified: boolean; sources: string[]; totalBudget: number | null }
   >();
   for (const p of projects) {
     if (!p.contractor) continue;
@@ -372,8 +647,13 @@ projectRouter.get("/contractors", (req, res) => {
       projects: [],
       verified: isVerified,
       sources: [],
+      totalBudget: null,
     };
     if (isVerified) entry.verified = true;
+    const cost = p.revisedBudget ?? p.approvedBudget;
+    if (typeof cost === "number") {
+      entry.totalBudget = (entry.totalBudget ?? 0) + cost;
+    }
     entry.projects.push(p);
     if (p.sourceUrl) entry.sources.push(p.sourceUrl);
     map.set(p.contractor, entry);
@@ -382,19 +662,20 @@ projectRouter.get("/contractors", (req, res) => {
     contractors: [...map.values()]
       .sort((a, b) => Number(b.verified) - Number(a.verified) || b.projects.length - a.projects.length)
       .map((c) => ({
-      name: c.name,
-      projectCount: c.projects.length,
-      verified: c.verified,
-      sources: [...new Set(c.sources)],
-      projects: c.projects.slice(0, 5).map((p) => ({
-        id: p.id,
-        name: p.name,
-        city: p.city,
-        status: p.status,
+        name: c.name,
+        projectCount: c.projects.length,
+        verified: c.verified,
+        totalBudget: c.totalBudget,
+        sources: [...new Set(c.sources)],
+        projects: c.projects.slice(0, 5).map((p) => ({
+          id: p.id,
+          name: p.name,
+          city: p.city,
+          status: p.status,
+        })),
       })),
-    })),
     note:
-      "Contractor records appear only where a cited public source names a contractor. Samaj Darpan does not infer or guess contractor appointments.",
+      "Contractor records appear only where a cited public source names a contractor. Demonstration records are excluded. Samaj Darpan does not infer or guess contractor appointments.",
   });
 });
 

@@ -4,6 +4,7 @@ import {
   Activity,
   AlertCircle,
   BadgeCheck,
+  Bookmark,
   Building2,
   CheckCircle2,
   ClipboardList,
@@ -14,11 +15,12 @@ import {
   Phone,
   ShieldCheck,
   ShieldQuestion,
+  Trash2,
   UserRound,
 } from "lucide-react";
-import type { AuditEntry } from "@shared/types";
+import type { AuditEntry, Project } from "@shared/types";
 import { CITIES } from "@shared/cities";
-import { ROLE_LABELS, formatDate, initials, relativeDate } from "@shared/format";
+import { ROLE_LABELS, STATUS_LABELS, formatDate, initials, relativeDate } from "@shared/format";
 import {
   Badge,
   Button,
@@ -31,6 +33,7 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
 import { useApiData } from "@/hooks/useApiData";
+import { useWatchlist } from "@/hooks/useWatchlist";
 import { ApiError, apiFetch } from "@/services/api";
 
 const STATES = [...new Set(CITIES.map((city) => city.state))].sort();
@@ -59,6 +62,11 @@ export default function AccountPage() {
   const myComplaints = useApiData<{ complaints: unknown[]; total: number }>(
     user ? "/complaints/mine" : null,
     [user?.id],
+  );
+  const { toggle: toggleWatchlist } = useWatchlist();
+  const savedProjects = useApiData<{ projects: Project[]; ids: string[] }>(
+    user ? "/projects-followed" : null,
+    [user?.id, user?.followedProjectIds?.length],
   );
 
   useEffect(() => {
@@ -296,6 +304,12 @@ export default function AccountPage() {
               onChange={setTab}
               tabs={[
                 { id: "profile", label: "Profile", icon: <UserRound size={13} /> },
+                {
+                  id: "saved",
+                  label: "Saved projects",
+                  count: savedProjects.data?.projects.length ?? user.followedProjectIds?.length ?? 0,
+                  icon: <Bookmark size={13} />,
+                },
                 { id: "security", label: "Security", icon: <LockKeyhole size={13} /> },
                 { id: "activity", label: "Your activity", icon: <Activity size={13} /> },
               ]}
@@ -409,6 +423,65 @@ export default function AccountPage() {
                     </span>
                   </div>
                 </form>
+              ) : tab === "saved" ? (
+                <div className="card p-5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <h2 className="font-display text-xl">Saved projects</h2>
+                      <p className="mt-1 text-[11px] text-ink-400">
+                        Projects you follow across sessions.
+                      </p>
+                    </div>
+                    <Badge tone="navy">{savedProjects.data?.projects.length ?? 0} saved</Badge>
+                  </div>
+                  {savedProjects.loading ? (
+                    <LoadingBlock rows={2} className="mt-4" />
+                  ) : (savedProjects.data?.projects.length ?? 0) === 0 ? (
+                    <EmptyState
+                      className="mt-4"
+                      icon={<Bookmark size={19} />}
+                      title="No saved projects yet"
+                      description="Use the Save button on any project card or project detail page to track updates here."
+                      action={
+                        <Link to="/projects" className="btn btn-outline btn-sm">
+                          Browse projects
+                        </Link>
+                      }
+                    />
+                  ) : (
+                    <ul className="mt-4 divide-y divide-navy-900/8">
+                      {savedProjects.data?.projects.map((p) => (
+                        <li key={p.id} className="flex items-center justify-between gap-3 py-3">
+                          <div className="min-w-0">
+                            <Link
+                              to={`/projects/${p.id}`}
+                              className="block truncate text-[12.5px] font-bold text-navy-900 hover:text-teal-700"
+                            >
+                              {p.name}
+                            </Link>
+                            <p className="text-[10px] text-ink-400">
+                              {p.city ?? p.state} · {STATUS_LABELS[p.status]} · Updated{" "}
+                              {relativeDate(p.lastUpdated)}
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={async () => {
+                              await toggleWatchlist(p.id);
+                              savedProjects.refresh();
+                            }}
+                            aria-label={`Remove ${p.name}`}
+                            icon={<Trash2 size={13} />}
+                          >
+                            Remove
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               ) : tab === "security" ? (
                 <div className="space-y-4">
                   <form onSubmit={submitPassword} className="card p-5" noValidate>

@@ -5,10 +5,13 @@ import * as XLSX from "xlsx";
 import { z } from "zod";
 import { CITIES } from "../src/shared/cities";
 import type {
-  AuditEntry,
   DataClass,
   ImportJob,
   Project,
+  ProjectCategory,
+  ProjectDocument,
+  ProjectStatus,
+  Representative,
   VerificationStatus,
 } from "../src/shared/types";
 import {
@@ -16,11 +19,12 @@ import {
   getDb,
   saveDb,
   sourceStatuses,
-  type UserRecord,
 } from "./db";
 import { requireRole, type AuthedRequest } from "./auth";
 import { connectorById, CONNECTORS } from "./dataSources";
 import { normalizeRow } from "./dataSources/normalize";
+import { matchPointToConstituencies } from "./geo";
+import { projectsToCsv } from "./project-routes";
 import { upsertProjects } from "./upsert";
 import { uid } from "./password";
 
@@ -227,6 +231,25 @@ adminRouter.patch("/users/:id", (req: AuthedRequest, res) => {
   res.json({ ok: true });
 });
 
+const fundingPatchSchema = z.object({
+  central: z.number().nonnegative().nullable().optional(),
+  state: z.number().nonnegative().nullable().optional(),
+  municipal: z.number().nonnegative().nullable().optional(),
+  other: z.number().nonnegative().nullable().optional(),
+  otherSourceLabel: z.string().trim().max(200).nullable().optional(),
+  notes: z.string().trim().max(2000).nullable().optional(),
+  sourceUrl: z.string().url().nullable().optional(),
+});
+
+const responsibilityPatchSchema = z.object({
+  sanctioningAuthority: z.string().trim().max(300).nullable().optional(),
+  executingAgency: z.string().trim().max(300).nullable().optional(),
+  tenderingAuthority: z.string().trim().max(300).nullable().optional(),
+  supervisingDepartment: z.string().trim().max(300).nullable().optional(),
+  contractor: z.string().trim().max(300).nullable().optional(),
+  sourceUrl: z.string().url().nullable().optional(),
+});
+
 const patchSchema = z.object({
   name: z.string().trim().min(2).max(300).optional(),
   description: z.string().max(8000).nullable().optional(),
@@ -260,7 +283,154 @@ const patchSchema = z.object({
     .enum(["imported", "under-review", "verified", "published", "outdated", "rejected"])
     .optional(),
   caveats: z.array(z.string().max(1000)).optional(),
+  tags: z.array(z.string().trim().max(60)).optional(),
+  funding: fundingPatchSchema.optional(),
+  responsibility: responsibilityPatchSchema.optional(),
   lastVerifiedAt: z.string().nullable().optional(),
+});
+
+const createProjectSchema = patchSchema.extend({
+  name: z.string().trim().min(2, "Enter a project name.").max(300),
+  state: z.string().trim().min(2, "Enter a state."),
+  category: z.enum([
+    "roads",
+    "bridges",
+    "metro",
+    "rail",
+    "airports",
+    "water",
+    "sanitation",
+    "housing",
+    "health",
+    "education",
+    "energy",
+    "parks",
+    "public-buildings",
+    "other",
+  ]),
+  status: z.enum(["planned", "ongoing", "completed", "delayed", "stalled", "unknown"]),
+  sourceOrganisation: z.string().trim().min(2, "Enter a source organisation.").max(300),
+});
+
+adminRouter.post("/projects", (req: AuthedRequest, res) => {
+  const parsed = createProjectSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: "Some fields are invalid.",
+      fieldErrors: z.flattenError(parsed.error).fieldErrors,
+    });
+    return;
+  }
+  const input = parsed.data;
+  const verificationStatus = input.verificationStatus ?? "under-review";
+  if (verificationStatus === "published" && !input.sourceUrl) {
+    res.status(400).json({
+      error: "A published record needs a source URL. Add the source before publishing.",
+    });
+    return;
+  }
+  const hasCoords = input.lat !== null && input.lat !== undefined && input.lng !== null && input.lng !== undefined;
+  if (input.coordinatesVerified === true && !hasCoords) {
+    res.status(400).json({
+      error: "Add a latitude and longitude before marking a coordinate verified.",
+    });
+    return;
+  }
+
+  const matchedCity = input.city
+    ? CITIES.find(
+        (c) =>
+          c.name.toLowerCase() === input.city!.toLowerCase() ||
+          c.slug === input.city!.toLowerCase(),
+      )
+    : undefined;
+  const now = new Date().toISOString();
+  const id = uid("prj");
+  const project: Project = {
+    id,
+    sourceId: null,
+    sourceOrganisation: input.sourceOrganisation,
+    sourceUrl: input.sourceUrl ?? null,
+    retrievedAt: now,
+    lastUpdated: now,
+    lastVerifiedAt:
+      verificationStatus === "verified" || verificationStatus === "published" ? now : null,
+    dataClass: input.dataClass ?? "admin-verified",
+    verificationStatus,
+    name: input.name,
+    description: input.description ?? null,
+    state: matchedCity?.state ?? input.state,
+    stateSlug: matchedCity?.stateSlug ?? slugifyState(input.state),
+    city: matchedCity?.name ?? input.city ?? null,
+    citySlug: matchedCity?.slug ?? input.citySlug ?? null,
+    district: input.district ?? null,
+    lat: hasCoords ? input.lat! : null,
+    lng: hasCoords ? input.lng! : null,
+    coordinatesVerified: Boolean(input.coordinatesVerified && hasCoords),
+    category: input.category as ProjectCategory,
+    status: input.status as ProjectStatus,
+    executingDepartment: input.executingDepartment ?? null,
+    fundingAuthority: input.fundingAuthority ?? null,
+    implementingAgency: input.implementingAgency ?? null,
+    contractor: input.contractor ?? null,
+    approvedBudget: input.approvedBudget ?? null,
+    revisedBudget: input.revisedBudget ?? null,
+    expenditure: input.expenditure ?? null,
+    currency: "INR",
+    startDate: input.startDate ?? null,
+    expectedCompletion: input.expectedCompletion ?? null,
+    actualCompletion: input.actualCompletion ?? null,
+    physicalProgress: input.physicalProgress ?? null,
+    financialProgress: input.financialProgress ?? null,
+    funding: {
+      central: input.funding?.central ?? null,
+      state: input.funding?.state ?? null,
+      municipal: input.funding?.municipal ?? null,
+      other: input.funding?.other ?? null,
+      otherSourceLabel: input.funding?.otherSourceLabel ?? null,
+      notes: input.funding?.notes ?? null,
+      sourceUrl: input.funding?.sourceUrl ?? input.sourceUrl ?? null,
+    },
+    responsibility: {
+      sanctioningAuthority: input.responsibility?.sanctioningAuthority ?? null,
+      executingAgency: input.responsibility?.executingAgency ?? input.implementingAgency ?? null,
+      tenderingAuthority: input.responsibility?.tenderingAuthority ?? null,
+      supervisingDepartment:
+        input.responsibility?.supervisingDepartment ?? input.executingDepartment ?? null,
+      contractor: input.responsibility?.contractor ?? input.contractor ?? null,
+      sourceUrl: input.responsibility?.sourceUrl ?? input.sourceUrl ?? null,
+    },
+    representatives: [],
+    documents: input.sourceUrl
+      ? [
+          {
+            id: uid("doc"),
+            title: `Primary source — ${input.sourceOrganisation}`,
+            kind: "report",
+            url: input.sourceUrl,
+            publishedAt: null,
+            sourceOrganisation: input.sourceOrganisation,
+            addedAt: now,
+          },
+        ]
+      : [],
+    caveats: input.caveats ?? [],
+    tags: input.tags ?? [],
+  };
+
+  getDb().projects.unshift(project);
+  saveDb();
+  audit({
+    actorId: req.user!.id,
+    actorName: req.user!.fullName,
+    action: "project.create",
+    entityType: "project",
+    entityId: project.id,
+    summary: `Created project record "${project.name}".`,
+    before: null,
+    after: { name: project.name, dataClass: project.dataClass, verificationStatus: project.verificationStatus },
+  });
+  res.status(201).json({ project });
 });
 
 adminRouter.patch("/projects/:id", (req: AuthedRequest, res) => {
@@ -331,9 +501,23 @@ adminRouter.patch("/projects/:id", (req: AuthedRequest, res) => {
   const {
     city: _city,
     state: _state,
+    funding: fundingPatch,
+    responsibility: responsibilityPatch,
     ...rest
-  } = patch;
+  } = patch as Partial<Project> & {
+    funding?: Partial<Project["funding"]>;
+    responsibility?: Partial<Project["responsibility"]>;
+  };
   Object.assign(project, rest);
+  if (fundingPatch) {
+    project.funding = { ...project.funding, ...fundingPatch };
+  }
+  if (responsibilityPatch) {
+    project.responsibility = { ...project.responsibility, ...responsibilityPatch };
+  }
+  if (rest.contractor !== undefined && responsibilityPatch?.contractor === undefined) {
+    project.responsibility = { ...project.responsibility, contractor: rest.contractor };
+  }
   project.lastUpdated = new Date().toISOString();
 
   if (
@@ -361,6 +545,112 @@ adminRouter.patch("/projects/:id", (req: AuthedRequest, res) => {
     summary: `Updated "${project.name}".`,
     before: before as unknown as Record<string, unknown>,
     after: patch as Record<string, unknown>,
+  });
+  res.json({ project });
+});
+
+adminRouter.delete("/projects/:id/representatives/:repId", (req: AuthedRequest, res) => {
+  const project = getDb().projects.find((p) => p.id === req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found." });
+    return;
+  }
+  const beforeCount = project.representatives.length;
+  project.representatives = project.representatives.filter(
+    (l) => l.representativeId !== req.params.repId,
+  );
+  if (project.representatives.length === beforeCount) {
+    res.status(404).json({ error: "Representative link not found on this project." });
+    return;
+  }
+  project.lastUpdated = new Date().toISOString();
+  saveDb();
+  audit({
+    actorId: req.user!.id,
+    actorName: req.user!.fullName,
+    action: "project.representative.unlink",
+    entityType: "project",
+    entityId: project.id,
+    summary: `Unlinked representative ${req.params.repId} from "${project.name}".`,
+    before: { representativeId: req.params.repId },
+    after: null,
+  });
+  res.json({ project });
+});
+
+adminRouter.post("/projects/:id/documents", (req: AuthedRequest, res) => {
+  const project = getDb().projects.find((p) => p.id === req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found." });
+    return;
+  }
+  const schema = z.object({
+    title: z.string().trim().min(2, "Enter a document title.").max(240),
+    kind: z.enum(["tender", "dpr", "report", "photograph", "notification", "other"]),
+    url: z
+      .string()
+      .trim()
+      .url("Enter a valid document URL.")
+      .refine((u) => /^https?:\/\//i.test(u), "URL must start with http:// or https://."),
+    publishedAt: z.string().trim().nullable().optional(),
+    sourceOrganisation: z.string().trim().max(200).nullable().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: "Please check the document details.",
+      fieldErrors: z.flattenError(parsed.error).fieldErrors,
+    });
+    return;
+  }
+  const doc: ProjectDocument = {
+    id: uid("doc"),
+    title: parsed.data.title,
+    kind: parsed.data.kind,
+    url: parsed.data.url,
+    publishedAt: parsed.data.publishedAt || null,
+    sourceOrganisation: parsed.data.sourceOrganisation || project.sourceOrganisation,
+    addedAt: new Date().toISOString(),
+  };
+  project.documents = [...project.documents, doc];
+  project.lastUpdated = new Date().toISOString();
+  saveDb();
+  audit({
+    actorId: req.user!.id,
+    actorName: req.user!.fullName,
+    action: "project.document.add",
+    entityType: "project",
+    entityId: project.id,
+    summary: `Attached document "${doc.title}" to "${project.name}".`,
+    before: null,
+    after: { documentId: doc.id, kind: doc.kind, url: doc.url },
+  });
+  res.status(201).json({ project, document: doc });
+});
+
+adminRouter.delete("/projects/:id/documents/:docId", (req: AuthedRequest, res) => {
+  const project = getDb().projects.find((p) => p.id === req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found." });
+    return;
+  }
+  const removed = project.documents.find((d) => d.id === req.params.docId);
+  if (!removed) {
+    res.status(404).json({ error: "Document not found." });
+    return;
+  }
+  project.documents = project.documents.filter((d) => d.id !== req.params.docId);
+  project.lastUpdated = new Date().toISOString();
+  saveDb();
+  audit({
+    actorId: req.user!.id,
+    actorName: req.user!.fullName,
+    action: "project.document.remove",
+    entityType: "project",
+    entityId: project.id,
+    summary: `Removed document "${removed.title}" from "${project.name}".`,
+    before: { documentId: removed.id, title: removed.title },
+    after: null,
   });
   res.json({ project });
 });
@@ -412,6 +702,112 @@ adminRouter.post("/projects/:id/verify", (req: AuthedRequest, res) => {
   res.json({ project });
 });
 
+adminRouter.delete("/projects/:id/representatives/:repId", (req: AuthedRequest, res) => {
+  const project = getDb().projects.find((p) => p.id === req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found." });
+    return;
+  }
+  const beforeCount = project.representatives.length;
+  project.representatives = project.representatives.filter(
+    (l) => l.representativeId !== req.params.repId,
+  );
+  if (project.representatives.length === beforeCount) {
+    res.status(404).json({ error: "Representative link not found on this project." });
+    return;
+  }
+  project.lastUpdated = new Date().toISOString();
+  saveDb();
+  audit({
+    actorId: req.user!.id,
+    actorName: req.user!.fullName,
+    action: "project.representative.unlink",
+    entityType: "project",
+    entityId: project.id,
+    summary: `Unlinked representative ${req.params.repId} from "${project.name}".`,
+    before: { representativeId: req.params.repId },
+    after: null,
+  });
+  res.json({ project });
+});
+
+adminRouter.post("/projects/:id/documents", (req: AuthedRequest, res) => {
+  const project = getDb().projects.find((p) => p.id === req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found." });
+    return;
+  }
+  const schema = z.object({
+    title: z.string().trim().min(2, "Enter a document title.").max(240),
+    kind: z.enum(["tender", "dpr", "report", "photograph", "notification", "other"]),
+    url: z
+      .string()
+      .trim()
+      .url("Enter a valid document URL.")
+      .refine((u) => /^https?:\/\//i.test(u), "URL must start with http:// or https://."),
+    publishedAt: z.string().trim().nullable().optional(),
+    sourceOrganisation: z.string().trim().max(200).nullable().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: "Please check the document details.",
+      fieldErrors: z.flattenError(parsed.error).fieldErrors,
+    });
+    return;
+  }
+  const doc: ProjectDocument = {
+    id: uid("doc"),
+    title: parsed.data.title,
+    kind: parsed.data.kind,
+    url: parsed.data.url,
+    publishedAt: parsed.data.publishedAt || null,
+    sourceOrganisation: parsed.data.sourceOrganisation || project.sourceOrganisation,
+    addedAt: new Date().toISOString(),
+  };
+  project.documents = [...project.documents, doc];
+  project.lastUpdated = new Date().toISOString();
+  saveDb();
+  audit({
+    actorId: req.user!.id,
+    actorName: req.user!.fullName,
+    action: "project.document.add",
+    entityType: "project",
+    entityId: project.id,
+    summary: `Attached document "${doc.title}" to "${project.name}".`,
+    before: null,
+    after: { documentId: doc.id, kind: doc.kind, url: doc.url },
+  });
+  res.status(201).json({ project, document: doc });
+});
+
+adminRouter.delete("/projects/:id/documents/:docId", (req: AuthedRequest, res) => {
+  const project = getDb().projects.find((p) => p.id === req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found." });
+    return;
+  }
+  const removed = project.documents.find((d) => d.id === req.params.docId);
+  if (!removed) {
+    res.status(404).json({ error: "Document not found." });
+    return;
+  }
+  project.documents = project.documents.filter((d) => d.id !== req.params.docId);
+  project.lastUpdated = new Date().toISOString();
+  saveDb();
+  audit({
+    actorId: req.user!.id,
+    actorName: req.user!.fullName,
+    action: "project.document.remove",
+    entityType: "project",
+    entityId: project.id,
+    summary: `Removed document "${removed.title}" from "${project.name}".`,
+    before: { documentId: removed.id, title: removed.title },
+    after: null,
+  });
+  res.json({ project });
+});
+
 adminRouter.post("/projects/:id/representatives", (req: AuthedRequest, res) => {
   const project = getDb().projects.find((p) => p.id === req.params.id);
   if (!project) {
@@ -457,6 +853,112 @@ adminRouter.post("/projects/:id/representatives", (req: AuthedRequest, res) => {
     summary: `Linked ${rep.name} to "${project.name}" (${parsed.data.basis}).`,
     before: null,
     after: { representativeId: rep.id, basis: parsed.data.basis },
+  });
+  res.json({ project });
+});
+
+adminRouter.delete("/projects/:id/representatives/:repId", (req: AuthedRequest, res) => {
+  const project = getDb().projects.find((p) => p.id === req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found." });
+    return;
+  }
+  const beforeCount = project.representatives.length;
+  project.representatives = project.representatives.filter(
+    (l) => l.representativeId !== req.params.repId,
+  );
+  if (project.representatives.length === beforeCount) {
+    res.status(404).json({ error: "Representative link not found on this project." });
+    return;
+  }
+  project.lastUpdated = new Date().toISOString();
+  saveDb();
+  audit({
+    actorId: req.user!.id,
+    actorName: req.user!.fullName,
+    action: "project.representative.unlink",
+    entityType: "project",
+    entityId: project.id,
+    summary: `Unlinked representative ${req.params.repId} from "${project.name}".`,
+    before: { representativeId: req.params.repId },
+    after: null,
+  });
+  res.json({ project });
+});
+
+adminRouter.post("/projects/:id/documents", (req: AuthedRequest, res) => {
+  const project = getDb().projects.find((p) => p.id === req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found." });
+    return;
+  }
+  const schema = z.object({
+    title: z.string().trim().min(2, "Enter a document title.").max(240),
+    kind: z.enum(["tender", "dpr", "report", "photograph", "notification", "other"]),
+    url: z
+      .string()
+      .trim()
+      .url("Enter a valid document URL.")
+      .refine((u) => /^https?:\/\//i.test(u), "URL must start with http:// or https://."),
+    publishedAt: z.string().trim().nullable().optional(),
+    sourceOrganisation: z.string().trim().max(200).nullable().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: "Please check the document details.",
+      fieldErrors: z.flattenError(parsed.error).fieldErrors,
+    });
+    return;
+  }
+  const doc: ProjectDocument = {
+    id: uid("doc"),
+    title: parsed.data.title,
+    kind: parsed.data.kind,
+    url: parsed.data.url,
+    publishedAt: parsed.data.publishedAt || null,
+    sourceOrganisation: parsed.data.sourceOrganisation || project.sourceOrganisation,
+    addedAt: new Date().toISOString(),
+  };
+  project.documents = [...project.documents, doc];
+  project.lastUpdated = new Date().toISOString();
+  saveDb();
+  audit({
+    actorId: req.user!.id,
+    actorName: req.user!.fullName,
+    action: "project.document.add",
+    entityType: "project",
+    entityId: project.id,
+    summary: `Attached document "${doc.title}" to "${project.name}".`,
+    before: null,
+    after: { documentId: doc.id, kind: doc.kind, url: doc.url },
+  });
+  res.status(201).json({ project, document: doc });
+});
+
+adminRouter.delete("/projects/:id/documents/:docId", (req: AuthedRequest, res) => {
+  const project = getDb().projects.find((p) => p.id === req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found." });
+    return;
+  }
+  const removed = project.documents.find((d) => d.id === req.params.docId);
+  if (!removed) {
+    res.status(404).json({ error: "Document not found." });
+    return;
+  }
+  project.documents = project.documents.filter((d) => d.id !== req.params.docId);
+  project.lastUpdated = new Date().toISOString();
+  saveDb();
+  audit({
+    actorId: req.user!.id,
+    actorName: req.user!.fullName,
+    action: "project.document.remove",
+    entityType: "project",
+    entityId: project.id,
+    summary: `Removed document "${removed.title}" from "${project.name}".`,
+    before: { documentId: removed.id, title: removed.title },
+    after: null,
   });
   res.json({ project });
 });
@@ -802,35 +1304,230 @@ adminRouter.post("/geo/constituencies", (req: AuthedRequest, res) => {
   });
 });
 
+adminRouter.post("/geo/match-projects", (req: AuthedRequest, res) => {
+  const database = getDb();
+  if (!database.geo.constituencies) {
+    res.status(400).json({
+      error: "Upload a constituency boundary GeoJSON dataset before running matching.",
+    });
+    return;
+  }
+  let scanned = 0;
+  let matchedProjects = 0;
+  let newLinks = 0;
+  const now = new Date().toISOString();
+
+  for (const project of database.projects) {
+    if (
+      project.dataClass === "demonstration" ||
+      project.verificationStatus === "rejected" ||
+      !project.coordinatesVerified ||
+      project.lat === null ||
+      project.lng === null
+    ) {
+      continue;
+    }
+    scanned += 1;
+    const matches = matchPointToConstituencies(
+      project.lat,
+      project.lng,
+      database.geo.constituencies,
+      database.representatives,
+    );
+    if (matches.length === 0) continue;
+    matchedProjects += 1;
+    for (const match of matches) {
+      if (!match.matchedRepresentativeId) continue;
+      const alreadyLinked = project.representatives.some(
+        (l) => l.representativeId === match.matchedRepresentativeId,
+      );
+      if (alreadyLinked) continue;
+      const rep = database.representatives.find(
+        (r) => r.id === match.matchedRepresentativeId,
+      );
+      project.representatives.push({
+        representativeId: match.matchedRepresentativeId,
+        basis: "verified-boundary",
+        note: `Point-in-polygon match with ${match.name}${match.house ? ` (${match.house})` : ""}.`,
+        verifiedAt: now,
+        sourceUrl: rep?.sourceUrl ?? null,
+      });
+      newLinks += 1;
+    }
+  }
+
+  saveDb();
+  audit({
+    actorId: req.user!.id,
+    actorName: req.user!.fullName,
+    action: "geo.constituencies.match",
+    entityType: "representative",
+    entityId: "constituencies",
+    summary: `Scanned ${scanned} verified-coordinate projects: ${matchedProjects} inside boundaries, ${newLinks} new representative links added.`,
+    before: null,
+    after: { scanned, matchedProjects, newLinks },
+  });
+  res.json({ scanned, matchedProjects, newLinks });
+});
+
+adminRouter.delete("/geo/constituencies", (req: AuthedRequest, res) => {
+  getDb().geo.constituencies = null;
+  getDb().geo.constituenciesUpdatedAt = null;
+  saveDb();
+  audit({
+    actorId: req.user!.id,
+    actorName: req.user!.fullName,
+    action: "geo.constituencies.clear",
+    entityType: "representative",
+    entityId: "constituencies",
+    summary: "Cleared stored constituency boundary dataset.",
+    before: null,
+    after: null,
+  });
+  res.json({ ok: true });
+});
+
+const representativeSchema = z.object({
+  name: z.string().trim().min(2, "Enter representative name.").max(160),
+  role: z.enum(["mp", "mla", "mayor", "councillor", "other"]),
+  house: z.enum(["lok-sabha", "vidhan-sabha", "municipal", "other"]),
+  position: z.string().trim().min(2, "Enter official position.").max(160),
+  constituency: z.string().trim().min(2, "Enter constituency name.").max(160),
+  state: z.string().trim().min(2, "Enter state.").max(120),
+  city: z.string().trim().nullable().optional(),
+  party: z.string().trim().max(160).nullable().optional(),
+  termStart: z.string().trim().nullable().optional(),
+  termEnd: z.string().trim().nullable().optional(),
+  profileUrl: z.string().trim().url().nullable().optional(),
+  sourceOrganisation: z.string().trim().min(2).max(200),
+  sourceUrl: z.string().trim().url("Provide a valid http:// or https:// source URL."),
+  verification: z.enum(["verified", "unverified"]).default("unverified"),
+  note: z.string().trim().max(500).nullable().optional(),
+});
+
+adminRouter.post("/representatives", (req: AuthedRequest, res) => {
+  const parsed = representativeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: "Please check representative details.",
+      fieldErrors: z.flattenError(parsed.error).fieldErrors,
+    });
+    return;
+  }
+  const input = parsed.data;
+  const matchedCity = input.city
+    ? CITIES.find(
+        (c) =>
+          c.slug === input.city!.toLowerCase() ||
+          c.id === input.city!.toLowerCase() ||
+          c.name.toLowerCase() === input.city!.toLowerCase(),
+      )
+    : undefined;
+  const now = new Date().toISOString();
+  const rep: Representative = {
+    id: uid("rep"),
+    name: input.name,
+    role: input.role,
+    house: input.house,
+    position: input.position,
+    constituency: input.constituency,
+    state: matchedCity?.state ?? input.state,
+    stateSlug: matchedCity?.stateSlug ?? slugifyState(input.state),
+    citySlug: matchedCity?.slug ?? null,
+    party: input.party || null,
+    termStart: input.termStart || null,
+    termEnd: input.termEnd || null,
+    profileUrl: input.profileUrl || null,
+    photoUrl: null,
+    sourceOrganisation: input.sourceOrganisation,
+    sourceUrl: input.sourceUrl,
+    lastVerifiedAt: now.slice(0, 10),
+    verification: input.verification,
+    note: input.note || null,
+  };
+  getDb().representatives.unshift(rep);
+  saveDb();
+  audit({
+    actorId: req.user!.id,
+    actorName: req.user!.fullName,
+    action: "representative.create",
+    entityType: "representative",
+    entityId: rep.id,
+    summary: `Added representative ${rep.name} (${rep.constituency}, ${rep.state}).`,
+    before: null,
+    after: { name: rep.name, constituency: rep.constituency, verification: rep.verification },
+  });
+  res.status(201).json({ representative: rep });
+});
+
+adminRouter.patch("/representatives/:id", (req: AuthedRequest, res) => {
+  const rep = getDb().representatives.find((r) => r.id === req.params.id);
+  if (!rep) {
+    res.status(404).json({ error: "Representative not found." });
+    return;
+  }
+  const parsed = representativeSchema.partial().safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: "Invalid representative update.",
+      fieldErrors: z.flattenError(parsed.error).fieldErrors,
+    });
+    return;
+  }
+  const before = {
+    name: rep.name,
+    party: rep.party,
+    constituency: rep.constituency,
+    verification: rep.verification,
+  };
+  const { city, state, ...rest } = parsed.data;
+  Object.assign(rep, rest);
+  if (city !== undefined) {
+    const matchedCity = city
+      ? CITIES.find(
+          (c) =>
+            c.slug === city.toLowerCase() ||
+            c.id === city.toLowerCase() ||
+            c.name.toLowerCase() === city.toLowerCase(),
+        )
+      : undefined;
+    rep.citySlug = matchedCity?.slug ?? null;
+    if (matchedCity) {
+      rep.state = matchedCity.state;
+      rep.stateSlug = matchedCity.stateSlug;
+    }
+  }
+  if (state) {
+    rep.state = state;
+    rep.stateSlug = slugifyState(state);
+  }
+  if (parsed.data.verification === "verified") {
+    rep.lastVerifiedAt = new Date().toISOString().slice(0, 10);
+  }
+  saveDb();
+  audit({
+    actorId: req.user!.id,
+    actorName: req.user!.fullName,
+    action: "representative.update",
+    entityType: "representative",
+    entityId: rep.id,
+    summary: `Updated representative ${rep.name}.`,
+    before,
+    after: {
+      name: rep.name,
+      party: rep.party,
+      constituency: rep.constituency,
+      verification: rep.verification,
+    },
+  });
+  res.json({ representative: rep });
+});
+
 adminRouter.get("/export", (req, res) => {
   const format = String(req.query.format ?? "json");
   const projects = getDb().projects;
   if (format === "csv") {
-    const columns = [
-      "id",
-      "name",
-      "state",
-      "city",
-      "category",
-      "status",
-      "approvedBudget",
-      "expenditure",
-      "contractor",
-      "sourceOrganisation",
-      "sourceUrl",
-      "verificationStatus",
-      "dataClass",
-    ];
-    const escape = (value: unknown) => {
-      const s = value === null || value === undefined ? "" : String(value);
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    const csv = [
-      columns.join(","),
-      ...projects.map((p) =>
-        columns.map((c) => escape((p as unknown as Record<string, unknown>)[c])).join(","),
-      ),
-    ].join("\n");
+    const csv = projectsToCsv(projects);
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", 'attachment; filename="samaj-darpan-projects.csv"');
     res.send(csv);

@@ -91,12 +91,7 @@ export function AppShell() {
           <div className="flex h-[66px] items-center justify-between gap-3">
             <Logo />
             <div className="flex items-center gap-2">
-              <div className="hidden sm:block">
-                <LocationSelector />
-              </div>
-              <div className="sm:hidden">
-                <LocationSelector />
-              </div>
+              <LocationSelector />
 
               {loading ? (
                 <div className="skeleton h-9 w-24 rounded-lg" />
@@ -223,6 +218,15 @@ export function AppShell() {
                 <span className="h-1.5 w-1.5 rounded-full bg-teal-500" />
                 Viewing <span className="text-navy-800">{cityName}</span>
               </span>
+              {user?.role === "admin" ? (
+                <Link to="/admin" className="flex items-center gap-1 font-bold text-teal-700 hover:text-teal-600">
+                  <ShieldCheck size={11} /> Admin console
+                </Link>
+              ) : user?.role === "official" ? (
+                <Link to="/complaints?queue=official" className="flex items-center gap-1 font-bold text-teal-700 hover:text-teal-600">
+                  <ClipboardList size={11} /> Review queue
+                </Link>
+              ) : null}
               <Link to="/sources" className="flex items-center gap-1 hover:text-navy-900">
                 <Database size={11} /> Data sources
               </Link>
@@ -256,7 +260,39 @@ export function AppShell() {
               >
                 <Database size={16} /> Data sources
               </Link>
-              {!user ? (
+              {user ? (
+                <div className="mt-2 space-y-1 border-t hairline pt-2">
+                  <Link
+                    to="/account"
+                    className="flex items-center gap-2.5 rounded-lg px-2 py-2.5 text-sm font-semibold text-ink-700 hover:bg-cream-50"
+                  >
+                    <UserRound size={16} /> Your account
+                  </Link>
+                  {user.role === "admin" ? (
+                    <Link
+                      to="/admin"
+                      className="flex items-center gap-2.5 rounded-lg px-2 py-2.5 text-sm font-semibold text-teal-700 hover:bg-teal-50"
+                    >
+                      <ShieldCheck size={16} /> Admin console
+                    </Link>
+                  ) : null}
+                  {user.role === "official" ? (
+                    <Link
+                      to="/complaints?queue=official"
+                      className="flex items-center gap-2.5 rounded-lg px-2 py-2.5 text-sm font-semibold text-teal-700 hover:bg-teal-50"
+                    >
+                      <ClipboardList size={16} /> Complaint review
+                    </Link>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2.5 text-sm font-semibold text-red-700 hover:bg-red-50"
+                  >
+                    <LogOut size={16} /> Sign out
+                  </button>
+                </div>
+              ) : (
                 <div className="mt-2 flex gap-2 border-t hairline pt-3">
                   <Link to="/login" className="btn btn-outline flex-1">
                     Sign in
@@ -265,7 +301,7 @@ export function AppShell() {
                     Create account
                   </Link>
                 </div>
-              ) : null}
+              )}
             </nav>
           </div>
         ) : null}

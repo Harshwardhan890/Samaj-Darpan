@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { MapContainer, Marker, Popup, TileLayer } from "react-leaflet";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { GeoJSON, MapContainer, Marker, Popup, TileLayer } from "react-leaflet";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -30,19 +30,37 @@ import {
   cn,
 } from "@/components/ui";
 import { CategoryIcon, ProjectRow } from "@/components/ProjectCard";
-import { projectMarkerIcon } from "@/components/maps";
+import { MapViewportController, STATUS_COLORS, projectMarkerIcon } from "@/components/maps";
 import { useCity } from "@/context/CityContext";
 import { useApiData } from "@/hooks/useApiData";
 import { qs } from "@/services/api";
 
 export default function MapExplorerPage() {
   const { city, cityName } = useCity();
-  const [q, setQ] = useState("");
-  const [category, setCategory] = useState("");
-  const [status, setStatus] = useState("");
-  const [showDemo, setShowDemo] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [q, setQ] = useState(() => searchParams.get("q") ?? "");
+  const [category, setCategory] = useState(() => searchParams.get("category") ?? "");
+  const [status, setStatus] = useState(() => searchParams.get("status") ?? "");
+  const [showDemo, setShowDemo] = useState(() => searchParams.get("demo") === "1");
+  const [showBoundaries, setShowBoundaries] = useState(
+    () => searchParams.get("boundaries") !== "0",
+  );
   const [view, setView] = useState<"map" | "list">("map");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    () => searchParams.get("selected"),
+  );
+
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (q) next.set("q", q);
+    if (category) next.set("category", category);
+    if (status) next.set("status", status);
+    if (showDemo) next.set("demo", "1");
+    if (!showBoundaries) next.set("boundaries", "0");
+    if (selectedId) next.set("selected", selectedId);
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, category, status, showDemo, showBoundaries, selectedId]);
 
   const { data, loading, error, refresh } = useApiData<
     Paginated<Project> & {
@@ -57,6 +75,8 @@ export default function MapExplorerPage() {
     })}`,
     [city?.slug],
   );
+
+  const geoData = useApiData<GeoJSON.FeatureCollection>("/geo/constituencies");
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -188,6 +208,18 @@ export default function MapExplorerPage() {
             />
             Show demonstration markers
           </label>
+
+          {geoData.data ? (
+            <label className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-teal-500/30 bg-teal-50/70 px-2.5 py-2 text-[11px] font-semibold text-teal-800">
+              <input
+                type="checkbox"
+                checked={showBoundaries}
+                onChange={(event) => setShowBoundaries(event.target.checked)}
+                className="h-3.5 w-3.5 accent-teal-600"
+              />
+              Constituency boundaries
+            </label>
+          ) : null}
 
           <div className="ml-auto flex rounded-lg border border-navy-900/12 bg-white p-0.5">
             <button
@@ -328,10 +360,37 @@ export default function MapExplorerPage() {
                     scrollWheelZoom
                     style={{ height: 560, width: "100%" }}
                   >
+                    <MapViewportController
+                      center={center}
+                      zoom={zoom}
+                      selectedProject={selected}
+                    />
                     <TileLayer
                       attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                       url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                     />
+                    {showBoundaries && geoData.data ? (
+                      <GeoJSON
+                        key={`boundaries-${geoData.data.features?.length ?? 0}`}
+                        data={geoData.data}
+                        style={{
+                          color: "#0e7c7b",
+                          weight: 1.5,
+                          dashArray: "4 4",
+                          fillColor: "#149a97",
+                          fillOpacity: 0.05,
+                        }}
+                        onEachFeature={(feature, layer) => {
+                          const props = (feature.properties ?? {}) as Record<string, unknown>;
+                          const name = String(
+                            props.name ?? props.pc_name ?? props.constituency ?? "Constituency",
+                          );
+                          const house = props.house ? ` (${String(props.house)})` : "";
+                          const stateName = props.state ? ` · ${String(props.state)}` : "";
+                          layer.bindTooltip(`${name}${house}${stateName}`, { sticky: true });
+                        }}
+                      />
+                    ) : null}
                     {mapped.map((project) => (
                       <Marker
                         key={project.id}
@@ -382,6 +441,31 @@ export default function MapExplorerPage() {
                   )}
                 </div>
               )}
+
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-navy-900/10 bg-cream-50 px-3.5 py-2 text-[10px] font-semibold text-ink-600">
+                <span className="text-[9px] font-bold uppercase tracking-[0.12em] text-ink-400">
+                  Legend
+                </span>
+                {(["ongoing", "completed", "delayed", "planned"] as const).map((st) => (
+                  <span key={st} className="flex items-center gap-1.5">
+                    <span
+                      className="h-2.5 w-2.5 rounded-full border border-white shadow-xs"
+                      style={{ background: STATUS_COLORS[st] }}
+                    />
+                    {STATUS_LABELS[st]}
+                  </span>
+                ))}
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2.5 w-2.5 rounded-full border border-dashed border-white bg-gold-500 opacity-80" />
+                  Demo (approx.)
+                </span>
+                {geoData.data ? (
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-2.5 w-4 border border-dashed border-teal-600 bg-teal-500/10" />
+                    Constituency boundary
+                  </span>
+                ) : null}
+              </div>
 
               <div className="flex items-start gap-2 rounded-lg border border-navy-900/10 bg-white px-3.5 py-2.5 text-[10.5px] leading-relaxed text-ink-500">
                 <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-600" />

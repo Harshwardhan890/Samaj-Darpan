@@ -15,6 +15,8 @@ import {
   DEMONSTRATION_PROJECTS,
   OFFICIAL_PROJECTS,
   REPRESENTATIVES,
+  SEED_COMPLAINTS,
+  SEED_CONSTITUENCIES_GEOJSON,
 } from "./seed-data";
 import { hashPassword, randomToken, sha256, uid } from "./password";
 
@@ -42,6 +44,7 @@ export interface UserRecord {
   authProvider: "local" | "supabase";
   /** Government officials stay unverified until an administrator approves. */
   officialVerified: boolean;
+  followedProjectIds: string[];
   createdAt: string;
   lastLoginAt: string | null;
 }
@@ -147,6 +150,7 @@ function seedUsers(): UserRecord[] {
     verificationExpiresAt: null,
     authProvider: "local" as const,
     officialVerified: true,
+    followedProjectIds: [],
     createdAt: "2026-01-12T09:00:00.000Z",
     lastLoginAt: null,
   }));
@@ -157,14 +161,19 @@ function seedDatabase(): DatabaseShape {
     meta: {
       version: 2,
       createdAt: new Date().toISOString(),
-      seededWith: ["official-public-records", "demonstration-records", "representatives-2024"],
+      seededWith: [
+        "official-public-records",
+        "demonstration-records",
+        "representatives-2024",
+        "constituency-boundaries-sample",
+      ],
     },
     users: seedUsers(),
     sessions: [],
     passwordResets: [],
     projects: [...OFFICIAL_PROJECTS, ...DEMONSTRATION_PROJECTS],
     representatives: REPRESENTATIVES,
-    complaints: [],
+    complaints: [...SEED_COMPLAINTS],
     audit: [
       {
         id: uid("aud"),
@@ -173,7 +182,7 @@ function seedDatabase(): DatabaseShape {
         action: "database.seeded",
         entityType: "import",
         entityId: "seed",
-        summary: `Seeded ${OFFICIAL_PROJECTS.length} sourced public records and ${DEMONSTRATION_PROJECTS.length} demonstration records.`,
+        summary: `Seeded ${OFFICIAL_PROJECTS.length} sourced public records, ${DEMONSTRATION_PROJECTS.length} demonstration records, and ${SEED_COMPLAINTS.length} sample complaints.`,
         before: null,
         after: null,
         createdAt: new Date().toISOString(),
@@ -182,7 +191,10 @@ function seedDatabase(): DatabaseShape {
     imports: [],
     sourceRuns: [],
     sourceRecords: [],
-    geo: { constituencies: null, constituenciesUpdatedAt: null },
+    geo: {
+      constituencies: SEED_CONSTITUENCIES_GEOJSON,
+      constituenciesUpdatedAt: new Date().toISOString(),
+    },
   };
 }
 
@@ -206,6 +218,7 @@ export function getDb(): DatabaseShape {
             ? true
             : (u.officialVerified ?? u.role !== "official"),
         authProvider: u.authProvider ?? "local",
+        followedProjectIds: Array.isArray(u.followedProjectIds) ? u.followedProjectIds : [],
       }));
       return db;
     } catch (error) {
@@ -253,6 +266,7 @@ export function toSessionUser(user: UserRecord): SessionUser {
     city: user.city,
     avatarUrl: user.avatarUrl,
     emailVerified: user.emailVerified,
+    followedProjectIds: user.followedProjectIds ?? [],
     createdAt: user.createdAt,
     authProvider: user.authProvider,
   };
